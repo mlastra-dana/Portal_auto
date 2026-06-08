@@ -53,8 +53,9 @@ const documentTypeLabel: Record<VehicleDocumentType, string> = {
   unknown: 'Documento no reconocido'
 };
 
-const normalizeId = (value: string) => value.replace(/\s+/g, '').toUpperCase();
-const isValidIdentity = (value: string) => /^(V|E|J|G)?-?\d{6,10}$/.test(normalizeId(value));
+const normalizeStoredId = (value: string) => value.replace(/\s+/g, '').toUpperCase();
+const normalizeId = (prefix: string, value: string) => `${prefix}${value.replace(/\D/g, '')}`.toUpperCase();
+const isValidIdentity = (value: string) => /^\d{6,10}$/.test(value.replace(/\D/g, ''));
 
 const LAMBDA_URL = (import.meta.env.VITE_API_URL || import.meta.env.VITE_NOMBRE_FUNCION_LAMBDA_URL) as string | undefined;
 
@@ -163,7 +164,9 @@ const ValidationPortalPage = () => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const storedIdentity = sessionStorage.getItem('autoPortalIdentity') ?? '';
   const [step, setStep] = useState<FlowStep>(storedIdentity ? 'upload' : 'login');
-  const [identity, setIdentity] = useState(storedIdentity);
+  const [identityPrefix, setIdentityPrefix] = useState('V');
+  const [identity, setIdentity] = useState('');
+  const [password, setPassword] = useState('');
   const [identityTouched, setIdentityTouched] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [vehicleData, setVehicleData] = useState<VehicleData>(emptyVehicleData);
@@ -171,8 +174,9 @@ const ValidationPortalPage = () => {
   const [isExtracting, setIsExtracting] = useState(false);
   const [uploadError, setUploadError] = useState('');
 
-  const normalizedIdentity = normalizeId(identity);
+  const normalizedIdentity = storedIdentity || normalizeId(identityPrefix, identity);
   const identityIsValid = isValidIdentity(identity);
+  const canLogin = identityIsValid && password.trim().length > 0;
   const hasExtractedDocument = Boolean(uploadedFile && extractionMeta.documentValid);
   const validationErrors = useMemo(() => validateVehicleData(vehicleData), [vehicleData]);
   const canShowJson = hasExtractedDocument && validationErrors.length === 0;
@@ -199,8 +203,8 @@ const ValidationPortalPage = () => {
 
   const handleLogin = () => {
     setIdentityTouched(true);
-    if (!identityIsValid) return;
-    sessionStorage.setItem('autoPortalIdentity', normalizedIdentity);
+    if (!canLogin) return;
+    sessionStorage.setItem('autoPortalIdentity', normalizeId(identityPrefix, identity));
     setStep('upload');
   };
 
@@ -235,7 +239,7 @@ const ValidationPortalPage = () => {
       const extracted = await extractVehicleWithLambda(file);
       setVehicleData({
         ...extracted.vehicle,
-        ownerId: extracted.vehicle.ownerId || normalizedIdentity
+        ownerId: extracted.vehicle.ownerId || normalizeStoredId(normalizedIdentity)
       });
       setExtractionMeta(extracted.meta);
       setStep('upload');
@@ -277,27 +281,50 @@ const ValidationPortalPage = () => {
         <div className="space-y-5">
           {step === 'login' ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft">
-              <h2 className="font-display text-lg font-bold text-brand-primary">Ingresa con tu cedula</h2>
-              <label className="mt-5 block space-y-1 text-sm font-semibold text-slate-700">
+              <label className="block space-y-1 text-sm font-semibold text-slate-700">
                 <span>Cedula o RIF</span>
+                <div className="flex overflow-hidden rounded-xl border border-slate-300 bg-white transition focus-within:border-brand-secondary">
+                  <select
+                    value={identityPrefix}
+                    onChange={(event) => setIdentityPrefix(event.target.value)}
+                    className="border-r border-slate-300 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-800 outline-none"
+                    aria-label="Tipo de documento"
+                  >
+                    <option value="V">V</option>
+                    <option value="E">E</option>
+                    <option value="J">J</option>
+                    <option value="G">G</option>
+                  </select>
+                  <input
+                    type="text"
+                    value={identity}
+                    onBlur={() => setIdentityTouched(true)}
+                    onChange={(event) => setIdentity(event.target.value.replace(/\D/g, ''))}
+                    className="min-w-0 flex-1 px-3 py-2.5 text-sm text-slate-900 outline-none"
+                    placeholder="12345678"
+                    inputMode="numeric"
+                  />
+                </div>
+              </label>
+              <label className="mt-4 block space-y-1 text-sm font-semibold text-slate-700">
+                <span>Contraseña</span>
                 <input
-                  type="text"
-                  value={identity}
-                  onBlur={() => setIdentityTouched(true)}
-                  onChange={(event) => setIdentity(event.target.value)}
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm uppercase text-slate-900 outline-none transition focus:border-brand-secondary"
-                  placeholder="Ej. V12345678"
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-brand-secondary"
+                  placeholder="Contraseña demo"
                 />
               </label>
               {identityTouched && !identityIsValid ? (
-                <p className="mt-2 text-sm font-medium text-rose-700">Ingresa una cedula o RIF valido.</p>
+                <p className="mt-2 text-sm font-medium text-rose-700">Ingresa un numero de cedula o RIF valido.</p>
               ) : null}
               <div className="mt-5 flex justify-end">
                 <button
                   type="button"
                   onClick={handleLogin}
-                  className={`btn-primary ${!identityIsValid ? 'cursor-not-allowed opacity-50' : ''}`}
-                  disabled={!identityIsValid}
+                  className={`btn-primary ${!canLogin ? 'cursor-not-allowed opacity-50' : ''}`}
+                  disabled={!canLogin}
                 >
                   Continuar
                 </button>
