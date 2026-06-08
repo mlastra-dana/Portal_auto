@@ -1,7 +1,7 @@
 import { ChangeEvent, useMemo, useRef, useState } from 'react';
 
-type FlowStep = 'login' | 'upload' | 'review' | 'sent';
-type VehicleDocumentType = 'certificate_of_origin' | 'circulation_card';
+type FlowStep = 'login' | 'upload' | 'review';
+type VehicleDocumentType = 'certificate_of_origin' | 'circulation_card' | 'unknown';
 
 interface VehicleData {
   documentType: VehicleDocumentType;
@@ -19,7 +19,7 @@ interface VehicleData {
 }
 
 const emptyVehicleData: VehicleData = {
-  documentType: 'circulation_card',
+  documentType: 'unknown',
   ownerId: '',
   ownerName: '',
   plate: '',
@@ -35,36 +35,73 @@ const emptyVehicleData: VehicleData = {
 
 const documentTypeLabel: Record<VehicleDocumentType, string> = {
   certificate_of_origin: 'Certificado de origen',
-  circulation_card: 'Carnet de circulacion'
+  circulation_card: 'Carnet de circulacion',
+  unknown: 'Documento vehicular'
 };
 
 const normalizeId = (value: string) => value.replace(/\s+/g, '').toUpperCase();
 const isValidIdentity = (value: string) => /^(V|E|J|G)?-?\d{6,10}$/.test(normalizeId(value));
 
-const detectDocumentType = (fileName: string): VehicleDocumentType => {
-  const normalized = fileName.toLowerCase();
-  if (normalized.includes('certificado') || normalized.includes('origen')) return 'certificate_of_origin';
-  return 'circulation_card';
-};
+const LAMBDA_URL = (import.meta.env.VITE_API_URL || import.meta.env.VITE_NOMBRE_FUNCION_LAMBDA_URL) as string | undefined;
 
-const mockExtractVehicleData = (file: File, identity: string): VehicleData => {
-  const documentType = detectDocumentType(file.name);
-  const normalizedName = file.name.toLowerCase();
-  const isToyota = normalizedName.includes('toyota') || normalizedName.includes('corolla');
+interface LambdaVehicleExtraction {
+  document_valid: boolean;
+  document_type: VehicleDocumentType;
+  vehicle: Partial<Record<keyof VehicleData, string | null>>;
+  missing_fields?: string[];
+  messages?: string[];
+}
 
+const readFileAsBase64 = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result ?? '');
+      resolve(result.includes(',') ? result.split(',')[1] : result);
+    };
+    reader.onerror = () => reject(new Error('No se pudo leer el archivo.'));
+    reader.readAsDataURL(file);
+  });
+
+const extractVehicleWithLambda = async (file: File): Promise<VehicleData> => {
+  if (!LAMBDA_URL) {
+    throw new Error('VITE_API_URL no esta configurado.');
+  }
+
+  const contentBase64 = await readFileAsBase64(file);
+  const response = await fetch(LAMBDA_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'extract_vehicle_document',
+      document: {
+        fileName: file.name,
+        contentType: file.type || 'application/octet-stream',
+        content_base64: contentBase64
+      }
+    })
+  });
+
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.message || payload.error || 'No se pudo extraer informacion del documento.');
+  }
+
+  const extraction = payload.extraction as LambdaVehicleExtraction;
+  const vehicle = extraction.vehicle ?? {};
   return {
-    documentType,
-    ownerId: normalizeId(identity),
-    ownerName: normalizedName.includes('empresa') ? 'Example Company Servicios C.A.' : 'Maria Alejandra Lastra',
-    plate: documentType === 'certificate_of_origin' ? '' : isToyota ? 'AA123BB' : 'AF482KM',
-    vin: isToyota ? '9BWZZZ377VT004251' : '8X1AB2CD3E4567890',
-    engineSerial: isToyota ? 'ENG-77VT004251' : 'MTR-4567890',
-    brand: isToyota ? 'Toyota' : 'Chevrolet',
-    model: isToyota ? 'Corolla XEI' : 'Onix Turbo',
-    year: isToyota ? '2021' : '2024',
-    color: isToyota ? 'Gris plata' : 'Blanco',
-    vehicleClass: 'Automovil',
-    useType: 'Particular'
+    documentType: extraction.document_type ?? 'unknown',
+    ownerId: String(vehicle.ownerId ?? ''),
+    ownerName: String(vehicle.ownerName ?? ''),
+    plate: String(vehicle.plate ?? ''),
+    vin: String(vehicle.vin ?? ''),
+    engineSerial: String(vehicle.engineSerial ?? ''),
+    brand: String(vehicle.brand ?? ''),
+    model: String(vehicle.model ?? ''),
+    year: String(vehicle.year ?? ''),
+    color: String(vehicle.color ?? ''),
+    vehicleClass: String(vehicle.vehicleClass ?? 'Automovil'),
+    useType: String(vehicle.useType ?? 'Particular')
   };
 };
 
@@ -91,14 +128,12 @@ const ValidationPortalPage = () => {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [vehicleData, setVehicleData] = useState<VehicleData>(emptyVehicleData);
   const [isExtracting, setIsExtracting] = useState(false);
-  const [isSending, setIsSending] = useState(false);
   const [uploadError, setUploadError] = useState('');
-  const [sentAt, setSentAt] = useState('');
 
   const normalizedIdentity = normalizeId(identity);
   const identityIsValid = isValidIdentity(identity);
   const validationErrors = useMemo(() => validateVehicleData(vehicleData), [vehicleData]);
-  const canSend = validationErrors.length === 0 && Boolean(uploadedFile) && !isSending;
+  const canFinish = validationErrors.length === 0 && Boolean(uploadedFile);
 
   const updateField = (field: keyof VehicleData, value: string) => {
     setVehicleData((prev) => ({ ...prev, [field]: value }));
@@ -129,41 +164,31 @@ const ValidationPortalPage = () => {
     setIsExtracting(true);
     setStep('upload');
 
-    await new Promise((resolve) => setTimeout(resolve, 900));
-    setVehicleData(mockExtractVehicleData(file, normalizedIdentity));
-    setIsExtracting(false);
-    setStep('review');
+    try {
+      const extractedData = await extractVehicleWithLambda(file);
+      setVehicleData({
+        ...extractedData,
+        ownerId: extractedData.ownerId || normalizedIdentity
+      });
+      setStep('review');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'No se pudo procesar el documento.';
+      setUploadError(message);
+      setUploadedFile(null);
+      setStep('upload');
+    } finally {
+      setIsExtracting(false);
+    }
   };
 
   const handleResetDocument = () => {
     setUploadedFile(null);
     setVehicleData({ ...emptyVehicleData, ownerId: normalizedIdentity });
     setUploadError('');
-    setSentAt('');
     setStep('upload');
   };
 
-  const handleSendToDana = async () => {
-    if (!canSend) return;
-    setIsSending(true);
-    const payload = {
-      destination: 'DANACONNECT',
-      sent_at: new Date().toISOString(),
-      source: 'example_company_vehicle_self_service',
-      identity: normalizedIdentity,
-      uploaded_document: {
-        file_name: uploadedFile?.name ?? null,
-        detected_type: vehicleData.documentType
-      },
-      vehicle: vehicleData
-    };
 
-    await new Promise((resolve) => setTimeout(resolve, 900));
-    console.info('DANAConnect vehicle payload', payload);
-    setSentAt(payload.sent_at);
-    setIsSending(false);
-    setStep('sent');
-  };
 
   return (
     <section className="container-app py-8 sm:py-10">
@@ -172,8 +197,8 @@ const ValidationPortalPage = () => {
           <div className="space-y-3">
             {[
               ['1', 'Identificacion', step !== 'login'],
-              ['2', 'Documento', step === 'review' || step === 'sent'],
-              ['3', 'Revision', step === 'sent']
+              ['2', 'Documento', step === 'review'],
+              ['3', 'Revision', false]
             ].map(([number, label, done]) => (
               <div key={String(label)} className="flex items-center gap-3 rounded-xl bg-white/8 px-3 py-3">
                 <span
@@ -193,9 +218,6 @@ const ValidationPortalPage = () => {
           {step === 'login' ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft">
               <h2 className="font-display text-lg font-bold text-brand-primary">Ingresa con tu cedula</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                Usaremos tu identificacion para asociar el registro del vehiculo antes de enviarlo a DANAConnect.
-              </p>
               <label className="mt-5 block space-y-1 text-sm font-semibold text-slate-700">
                 <span>Cedula o RIF</span>
                 <input
@@ -265,9 +287,6 @@ const ValidationPortalPage = () => {
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <h2 className="font-display text-lg font-bold text-brand-primary">Revisa la informacion detectada</h2>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Ajusta cualquier dato antes de enviar el registro del vehiculo a DANAConnect.
-                  </p>
                 </div>
                 <button type="button" onClick={handleResetDocument} className="btn-secondary">
                   Cambiar documento
@@ -335,50 +354,11 @@ const ValidationPortalPage = () => {
               <div className="mt-6 flex justify-end">
                 <button
                   type="button"
-                  onClick={handleSendToDana}
-                  disabled={!canSend}
-                  className={`btn-primary ${!canSend ? 'cursor-not-allowed opacity-50' : ''}`}
+                  onClick={() => setStep('upload')}
+                  disabled={!canFinish}
+                  className={`btn-primary ${!canFinish ? 'cursor-not-allowed opacity-50' : ''}`}
                 >
-                  {isSending ? 'Enviando...' : 'Enviar a DANAConnect'}
-                </button>
-              </div>
-            </div>
-          ) : null}
-
-          {step === 'sent' ? (
-            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft">
-              <div className="rounded-xl bg-emerald-50 p-5">
-                <p className="text-sm font-bold text-emerald-800">Informacion enviada a DANAConnect</p>
-                <p className="mt-2 text-sm text-emerald-700">
-                  El registro del vehiculo fue preparado y enviado correctamente.
-                </p>
-              </div>
-              <div className="mt-5 grid gap-3 text-sm text-slate-700 sm:grid-cols-2">
-                <p>
-                  <strong>Documento:</strong> {documentTypeLabel[vehicleData.documentType]}
-                </p>
-                <p>
-                  <strong>Fecha:</strong> {sentAt ? new Date(sentAt).toLocaleString() : 'Enviado'}
-                </p>
-                <p>
-                  <strong>Vehiculo:</strong> {vehicleData.brand} {vehicleData.model} {vehicleData.year}
-                </p>
-                <p>
-                  <strong>VIN:</strong> <span className="font-mono">{vehicleData.vin}</span>
-                </p>
-              </div>
-              <div className="mt-6 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setUploadedFile(null);
-                    setVehicleData({ ...emptyVehicleData, ownerId: normalizedIdentity });
-                    setSentAt('');
-                    setStep('upload');
-                  }}
-                  className="btn-primary"
-                >
-                  Registrar otro vehiculo
+                  Procesar otro documento
                 </button>
               </div>
             </div>
