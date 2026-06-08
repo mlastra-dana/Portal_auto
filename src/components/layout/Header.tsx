@@ -8,9 +8,6 @@ const Header = () => {
         <Link to="/" className="flex items-center" aria-label="Ir al inicio">
           <img src={exampleCompanyLogo} alt="Example Company" className="h-10 w-auto sm:h-11" />
         </Link>
-        <span className="hidden text-xs font-semibold uppercase tracking-wide text-white/60 sm:inline">
-          Expedientes sin fricción
-        </span>
       </div>
     </header>
   );

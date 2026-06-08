@@ -1,22 +1,24 @@
-# Example Company - Verificación Documental de Motocicletas
+# Example Company - Autogestion Vehicular
 
-Aplicación web construida con React + Vite + TypeScript + TailwindCSS para simular la validación documental de expedientes de motocicletas.
+Aplicacion web construida con React + Vite + TypeScript + TailwindCSS para registrar informacion de vehiculos orientada a seguros de autos.
 
-## Características
+## Caracteristicas
 
-- Interfaz operativa con identidad Example Company.
-- Portal de validación en `/validation`.
-- Carga de 4 documentos con estado por slot:
-  - Factura
+- Identidad visual Example Company desde `src/brand/Marca_example`.
+- Inicio del flujo por cedula o RIF.
+- Portal de autogestion en `/validation`.
+- Carga de un documento vehicular:
   - Certificado de origen
-  - Fotoplaca
-  - Fotoserial
-- Validación simulada (mocks) para:
-  - tipo documental
-  - coincidencia de placa
-  - coincidencia de serial
-  - estado general del expediente
-- Dashboard de resultados con checklist, mensajes y acciones condicionales.
+  - Carnet de circulacion
+- Deteccion simulada del tipo documental.
+- Extraccion simulada de datos del vehiculo:
+  - titular
+  - placa
+  - VIN / serial de carroceria
+  - serial de motor
+  - marca, modelo, ano, color y uso
+- Revision editable antes del envio.
+- Envio demo de payload estructurado a DANAConnect por consola.
 - Preparado para despliegue SPA en AWS Amplify.
 
 ## Stack
@@ -27,77 +29,19 @@ Aplicación web construida con React + Vite + TypeScript + TailwindCSS para simu
 - TailwindCSS
 - React Router DOM
 
-## Estructura del proyecto
-
-```text
-src/
-  components/
-    layout/
-    ui/
-    validation/
-  pages/
-    HomePage.tsx
-    ValidationPortalPage.tsx
-  mocks/
-    documents.ts
-    validation.ts
-  types/
-    validation.ts
-  data/
-    homeContent.ts
-  assets/
-  App.tsx
-  main.tsx
-```
-
-## Instalación
-
-```bash
-npm install
-```
-
 ## Desarrollo local
 
 ```bash
+npm install
 npm run dev
 ```
 
 App disponible por defecto en `http://localhost:5173`.
 
-## Build de producción
+## Build de produccion
 
 ```bash
 npm run build
 ```
 
 El output se genera en `dist/`.
-
-## Despliegue en AWS Amplify
-
-Este proyecto es SPA y funciona con el flujo estándar de Amplify para Vite.
-
-Sugerencias en Amplify:
-
-- Build command: `npm run build`
-- Output directory: `dist`
-
-Si configuras redirects/rewrite en Amplify, usa una regla de SPA para redirigir rutas a `index.html`.
-
-## Mocks y escenarios
-
-La validación mock vive en:
-
-- `src/mocks/documents.ts`
-- `src/mocks/validation.ts`
-
-Puedes forzar escenarios por nombre de archivo:
-
-- Si contiene `mismatch` o `error` -> expediente con observaciones.
-- Si contiene `manual` o `ilegible` -> revisión manual.
-- Si los nombres son coherentes por tipo -> expediente validado.
-
-## Scripts
-
-- `npm run dev` - desarrollo
-- `npm run build` - type-check + build
-- `npm run preview` - vista previa de build
