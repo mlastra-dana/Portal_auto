@@ -197,6 +197,38 @@ def missing_fields_for(vehicle: Dict[str, Any]) -> List[str]:
     return missing
 
 
+def is_invalid_or_illegible(extraction: Dict[str, Any]) -> bool:
+    document_type = extraction.get("document_type")
+    vehicle = extraction.get("vehicle") or {}
+    confidence = extraction.get("confidence")
+
+    if document_type not in {"certificate_of_origin", "circulation_card"}:
+        return True
+    if not extraction.get("document_valid"):
+        return True
+
+    has_vin = bool(vehicle.get("vin"))
+    has_vehicle_description = any(vehicle.get(field) for field in ["brand", "model", "year", "plate"])
+    if not has_vin or not has_vehicle_description:
+        return True
+
+    if document_type == "circulation_card" and not vehicle.get("plate"):
+        return True
+
+    if isinstance(confidence, (int, float)) and confidence < 0.5:
+        return True
+
+    return False
+
+
+def invalid_document_response(extraction: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return response(422, {
+        "ok": False,
+        "message": "Documento inválido o ilegible. Por favor carga un certificado de origen o carnet de circulación válido y legible.",
+        "extraction": extraction,
+    })
+
+
 def safe_json_loads(raw: str) -> Dict[str, Any]:
     try:
         return json.loads(raw)
@@ -432,16 +464,21 @@ def handle_extract_vehicle_document(body: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         extraction = extract_with_bedrock(file_bytes, document, ocr_text)
+        if is_invalid_or_illegible(extraction):
+            return invalid_document_response(extraction)
         return response(200, {"ok": True, "action": "extract_vehicle_document", "extraction": extraction})
     except Exception as exc:
         logger.exception("No se pudo extraer con Bedrock")
         if ocr_text:
+            fallback_extraction = extract_from_ocr_fallback(document, ocr_text)
+            if is_invalid_or_illegible(fallback_extraction):
+                return invalid_document_response(fallback_extraction)
             return response(
                 200,
                 {
                     "ok": True,
                     "action": "extract_vehicle_document",
-                    "extraction": extract_from_ocr_fallback(document, ocr_text),
+                    "extraction": fallback_extraction,
                     "warning": str(exc),
                 },
             )

@@ -1,6 +1,6 @@
 import { ChangeEvent, useMemo, useRef, useState } from 'react';
 
-type FlowStep = 'login' | 'upload' | 'review';
+type FlowStep = 'login' | 'upload' | 'json';
 type VehicleDocumentType = 'certificate_of_origin' | 'circulation_card' | 'unknown';
 
 interface VehicleData {
@@ -18,6 +18,13 @@ interface VehicleData {
   useType: string;
 }
 
+interface ExtractionMeta {
+  documentValid: boolean;
+  confidence: number | null;
+  missingFields: string[];
+  messages: string[];
+}
+
 const emptyVehicleData: VehicleData = {
   documentType: 'unknown',
   ownerId: '',
@@ -29,14 +36,21 @@ const emptyVehicleData: VehicleData = {
   model: '',
   year: '',
   color: '',
-  vehicleClass: 'Automovil',
-  useType: 'Particular'
+  vehicleClass: '',
+  useType: ''
+};
+
+const emptyExtractionMeta: ExtractionMeta = {
+  documentValid: false,
+  confidence: null,
+  missingFields: [],
+  messages: []
 };
 
 const documentTypeLabel: Record<VehicleDocumentType, string> = {
   certificate_of_origin: 'Certificado de origen',
   circulation_card: 'Carnet de circulacion',
-  unknown: 'Documento vehicular'
+  unknown: 'Documento no reconocido'
 };
 
 const normalizeId = (value: string) => value.replace(/\s+/g, '').toUpperCase();
@@ -47,9 +61,15 @@ const LAMBDA_URL = (import.meta.env.VITE_API_URL || import.meta.env.VITE_NOMBRE_
 interface LambdaVehicleExtraction {
   document_valid: boolean;
   document_type: VehicleDocumentType;
+  confidence?: number;
   vehicle: Partial<Record<keyof VehicleData, string | null>>;
   missing_fields?: string[];
   messages?: string[];
+}
+
+interface ExtractedVehiclePayload {
+  vehicle: VehicleData;
+  meta: ExtractionMeta;
 }
 
 const readFileAsBase64 = (file: File): Promise<string> =>
@@ -63,7 +83,9 @@ const readFileAsBase64 = (file: File): Promise<string> =>
     reader.readAsDataURL(file);
   });
 
-const extractVehicleWithLambda = async (file: File): Promise<VehicleData> => {
+const asText = (value: string | null | undefined) => String(value ?? '');
+
+const extractVehicleWithLambda = async (file: File): Promise<ExtractedVehiclePayload> => {
   if (!LAMBDA_URL) {
     throw new Error('VITE_API_URL no esta configurado.');
   }
@@ -84,39 +106,43 @@ const extractVehicleWithLambda = async (file: File): Promise<VehicleData> => {
 
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.message || payload.error || 'No se pudo extraer informacion del documento.');
+    throw new Error(payload.message || payload.error || 'Documento invalido o ilegible. Por favor carga un certificado de origen o carnet de circulacion valido y legible.');
   }
 
   const extraction = payload.extraction as LambdaVehicleExtraction;
-  const vehicle = extraction.vehicle ?? {};
-  return {
-    documentType: extraction.document_type ?? 'unknown',
-    ownerId: String(vehicle.ownerId ?? ''),
-    ownerName: String(vehicle.ownerName ?? ''),
-    plate: String(vehicle.plate ?? ''),
-    vin: String(vehicle.vin ?? ''),
-    engineSerial: String(vehicle.engineSerial ?? ''),
-    brand: String(vehicle.brand ?? ''),
-    model: String(vehicle.model ?? ''),
-    year: String(vehicle.year ?? ''),
-    color: String(vehicle.color ?? ''),
-    vehicleClass: String(vehicle.vehicleClass ?? 'Automovil'),
-    useType: String(vehicle.useType ?? 'Particular')
-  };
-};
-
-const validateVehicleData = (data: VehicleData) => {
-  const errors: string[] = [];
-  if (!data.ownerId.trim()) errors.push('La cedula o RIF del titular es obligatoria.');
-  if (!data.ownerName.trim()) errors.push('El nombre del titular es obligatorio.');
-  if (!data.brand.trim()) errors.push('La marca del vehiculo es obligatoria.');
-  if (!data.model.trim()) errors.push('El modelo del vehiculo es obligatorio.');
-  if (!/^\d{4}$/.test(data.year.trim())) errors.push('El ano debe tener cuatro digitos.');
-  if (!data.vin.trim()) errors.push('El VIN o serial de carroceria es obligatorio.');
-  if (data.documentType === 'circulation_card' && !data.plate.trim()) {
-    errors.push('La placa es obligatoria cuando se carga carnet de circulacion.');
+  if (!extraction.document_valid || extraction.document_type === 'unknown') {
+    throw new Error('Documento invalido o ilegible. Por favor carga un certificado de origen o carnet de circulacion valido y legible.');
   }
-  return errors;
+
+  const vehicle = extraction.vehicle ?? {};
+  const hasVin = Boolean(vehicle.vin);
+  const hasVehicleDescription = Boolean(vehicle.brand || vehicle.model || vehicle.year || vehicle.plate);
+  if (!hasVin || !hasVehicleDescription || (extraction.document_type === 'circulation_card' && !vehicle.plate)) {
+    throw new Error('Documento invalido o ilegible. Por favor carga un certificado de origen o carnet de circulacion valido y legible.');
+  }
+
+  return {
+    vehicle: {
+      documentType: extraction.document_type,
+      ownerId: asText(vehicle.ownerId),
+      ownerName: asText(vehicle.ownerName),
+      plate: asText(vehicle.plate),
+      vin: asText(vehicle.vin),
+      engineSerial: asText(vehicle.engineSerial),
+      brand: asText(vehicle.brand),
+      model: asText(vehicle.model),
+      year: asText(vehicle.year),
+      color: asText(vehicle.color),
+      vehicleClass: asText(vehicle.vehicleClass),
+      useType: asText(vehicle.useType)
+    },
+    meta: {
+      documentValid: extraction.document_valid,
+      confidence: typeof extraction.confidence === 'number' ? extraction.confidence : null,
+      missingFields: extraction.missing_fields ?? [],
+      messages: extraction.messages ?? []
+    }
+  };
 };
 
 const ValidationPortalPage = () => {
@@ -127,23 +153,41 @@ const ValidationPortalPage = () => {
   const [identityTouched, setIdentityTouched] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [vehicleData, setVehicleData] = useState<VehicleData>(emptyVehicleData);
+  const [extractionMeta, setExtractionMeta] = useState<ExtractionMeta>(emptyExtractionMeta);
   const [isExtracting, setIsExtracting] = useState(false);
   const [uploadError, setUploadError] = useState('');
 
   const normalizedIdentity = normalizeId(identity);
   const identityIsValid = isValidIdentity(identity);
-  const validationErrors = useMemo(() => validateVehicleData(vehicleData), [vehicleData]);
-  const canFinish = validationErrors.length === 0 && Boolean(uploadedFile);
 
-  const updateField = (field: keyof VehicleData, value: string) => {
-    setVehicleData((prev) => ({ ...prev, [field]: value }));
-  };
+  const finalJson = useMemo(
+    () => ({
+      document: {
+        type: vehicleData.documentType,
+        label: documentTypeLabel[vehicleData.documentType],
+        fileName: uploadedFile?.name ?? null,
+        valid: extractionMeta.documentValid,
+        confidence: extractionMeta.confidence,
+        missingFields: extractionMeta.missingFields,
+        messages: extractionMeta.messages
+      },
+      vehicle: vehicleData
+    }),
+    [extractionMeta, uploadedFile?.name, vehicleData]
+  );
 
   const handleLogin = () => {
     setIdentityTouched(true);
     if (!identityIsValid) return;
     sessionStorage.setItem('autoPortalIdentity', normalizedIdentity);
-    setVehicleData((prev) => ({ ...prev, ownerId: normalizedIdentity }));
+    setStep('upload');
+  };
+
+  const handleResetDocument = () => {
+    setUploadedFile(null);
+    setVehicleData(emptyVehicleData);
+    setExtractionMeta(emptyExtractionMeta);
+    setUploadError('');
     setStep('upload');
   };
 
@@ -155,40 +199,36 @@ const ValidationPortalPage = () => {
     const allowedTypes = ['application/pdf', 'image/png', 'image/jpeg'];
     const allowedByName = /\.(pdf|png|jpe?g)$/i.test(file.name);
     if (!allowedTypes.includes(file.type) && !allowedByName) {
-      setUploadError('Carga un PDF, PNG o JPG del documento del vehiculo.');
+      setUploadError('Carga un PDF, PNG o JPG del certificado de origen o carnet de circulacion.');
       return;
     }
 
     setUploadError('');
     setUploadedFile(file);
+    setVehicleData(emptyVehicleData);
+    setExtractionMeta(emptyExtractionMeta);
     setIsExtracting(true);
     setStep('upload');
 
     try {
-      const extractedData = await extractVehicleWithLambda(file);
+      const extracted = await extractVehicleWithLambda(file);
       setVehicleData({
-        ...extractedData,
-        ownerId: extractedData.ownerId || normalizedIdentity
+        ...extracted.vehicle,
+        ownerId: extracted.vehicle.ownerId || normalizedIdentity
       });
-      setStep('review');
+      setExtractionMeta(extracted.meta);
+      setStep('json');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'No se pudo procesar el documento.';
       setUploadError(message);
       setUploadedFile(null);
+      setVehicleData(emptyVehicleData);
+      setExtractionMeta(emptyExtractionMeta);
       setStep('upload');
     } finally {
       setIsExtracting(false);
     }
   };
-
-  const handleResetDocument = () => {
-    setUploadedFile(null);
-    setVehicleData({ ...emptyVehicleData, ownerId: normalizedIdentity });
-    setUploadError('');
-    setStep('upload');
-  };
-
-
 
   return (
     <section className="container-app py-8 sm:py-10">
@@ -196,9 +236,8 @@ const ValidationPortalPage = () => {
         <aside className="rounded-2xl border border-white/10 bg-brand-primary/70 p-4 text-white shadow-card">
           <div className="space-y-3">
             {[
-              ['1', 'Identificacion', step !== 'login'],
-              ['2', 'Documento', step === 'review'],
-              ['3', 'Revision', false]
+              ['1', 'Documento', step === 'json'],
+              ['2', 'JSON', false]
             ].map(([number, label, done]) => (
               <div key={String(label)} className="flex items-center gap-3 rounded-xl bg-white/8 px-3 py-3">
                 <span
@@ -248,12 +287,9 @@ const ValidationPortalPage = () => {
           {step === 'upload' ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <h2 className="font-display text-lg font-bold text-brand-primary">Carga el documento del vehiculo</h2>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Puedes cargar certificado de origen o carnet de circulacion en PDF, PNG o JPG.
-                  </p>
-                </div>
+                <h2 className="font-display text-lg font-bold text-brand-primary">
+                  Carga el certificado de origen o carnet de circulacion
+                </h2>
                 <span className="rounded-full bg-brand-light px-3 py-1 text-xs font-semibold text-brand-secondary">
                   Titular: {normalizedIdentity}
                 </span>
@@ -268,7 +304,7 @@ const ValidationPortalPage = () => {
                   {isExtracting ? 'Extrayendo informacion...' : 'Seleccionar documento'}
                 </span>
                 <span className="mt-2 text-xs font-medium text-slate-500">
-                  {uploadedFile ? uploadedFile.name : 'Certificado de origen o carnet de circulacion'}
+                  {uploadedFile ? uploadedFile.name : 'PDF, PNG o JPG'}
                 </span>
               </button>
               <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg" onChange={handleSelectFile} className="hidden" />
@@ -282,14 +318,18 @@ const ValidationPortalPage = () => {
             </div>
           ) : null}
 
-          {step === 'review' ? (
+          {step === 'json' ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <h2 className="font-display text-lg font-bold text-brand-primary">Revisa la informacion detectada</h2>
-                </div>
-                <button type="button" onClick={handleResetDocument} className="btn-secondary">
-                  Cambiar documento
+              <div className="flex items-start justify-between gap-3">
+                <h2 className="font-display text-lg font-bold text-brand-primary">JSON generado</h2>
+                <button
+                  type="button"
+                  onClick={handleResetDocument}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-semibold text-slate-500 transition hover:border-rose-400 hover:text-rose-600"
+                  aria-label="Quitar documento adjunto"
+                  title="Quitar documento"
+                >
+                  ×
                 </button>
               </div>
 
@@ -298,66 +338,11 @@ const ValidationPortalPage = () => {
                 {uploadedFile ? <span className="text-slate-500"> · {uploadedFile.name}</span> : null}
               </div>
 
-              <div className="mt-5 grid gap-4 md:grid-cols-2">
-                <label className="space-y-1 text-sm font-semibold text-slate-700">
-                  <span>Titular</span>
-                  <input value={vehicleData.ownerName} onChange={(event) => updateField('ownerName', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary" />
-                </label>
-                <label className="space-y-1 text-sm font-semibold text-slate-700">
-                  <span>Cedula/RIF</span>
-                  <input value={vehicleData.ownerId} onChange={(event) => updateField('ownerId', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
-                </label>
-                <label className="space-y-1 text-sm font-semibold text-slate-700">
-                  <span>Placa</span>
-                  <input value={vehicleData.plate} onChange={(event) => updateField('plate', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" placeholder="Sin placa si aplica" />
-                </label>
-                <label className="space-y-1 text-sm font-semibold text-slate-700">
-                  <span>VIN / Serial carroceria</span>
-                  <input value={vehicleData.vin} onChange={(event) => updateField('vin', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
-                </label>
-                <label className="space-y-1 text-sm font-semibold text-slate-700">
-                  <span>Serial motor</span>
-                  <input value={vehicleData.engineSerial} onChange={(event) => updateField('engineSerial', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
-                </label>
-                <label className="space-y-1 text-sm font-semibold text-slate-700">
-                  <span>Marca</span>
-                  <input value={vehicleData.brand} onChange={(event) => updateField('brand', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary" />
-                </label>
-                <label className="space-y-1 text-sm font-semibold text-slate-700">
-                  <span>Modelo</span>
-                  <input value={vehicleData.model} onChange={(event) => updateField('model', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary" />
-                </label>
-                <label className="space-y-1 text-sm font-semibold text-slate-700">
-                  <span>Ano</span>
-                  <input value={vehicleData.year} onChange={(event) => updateField('year', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary" />
-                </label>
-                <label className="space-y-1 text-sm font-semibold text-slate-700">
-                  <span>Color</span>
-                  <input value={vehicleData.color} onChange={(event) => updateField('color', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary" />
-                </label>
-                <label className="space-y-1 text-sm font-semibold text-slate-700">
-                  <span>Uso</span>
-                  <select value={vehicleData.useType} onChange={(event) => updateField('useType', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary">
-                    <option>Particular</option>
-                    <option>Comercial</option>
-                    <option>Carga</option>
-                  </select>
-                </label>
-              </div>
-
-              {validationErrors.length > 0 ? (
-                <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
-                  {validationErrors[0]}
-                </div>
-              ) : null}
-
-              <div className="mt-6 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => setStep('upload')}
-                  disabled={!canFinish}
-                  className={`btn-primary ${!canFinish ? 'cursor-not-allowed opacity-50' : ''}`}
-                >
+              <pre className="mt-5 max-h-[520px] overflow-auto rounded-xl bg-brand-primary p-4 text-xs leading-6 text-brand-light">
+                {JSON.stringify(finalJson, null, 2)}
+              </pre>
+              <div className="mt-5 flex justify-end">
+                <button type="button" onClick={handleResetDocument} className="btn-primary">
                   Procesar otro documento
                 </button>
               </div>
