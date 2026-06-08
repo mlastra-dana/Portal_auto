@@ -145,6 +145,20 @@ const extractVehicleWithLambda = async (file: File): Promise<ExtractedVehiclePay
   };
 };
 
+const validateVehicleData = (data: VehicleData) => {
+  const errors: string[] = [];
+  if (!data.ownerId.trim()) errors.push('La cedula o RIF del titular es obligatoria.');
+  if (!data.ownerName.trim()) errors.push('El nombre del titular es obligatorio.');
+  if (!data.brand.trim()) errors.push('La marca del vehiculo es obligatoria.');
+  if (!data.model.trim()) errors.push('El modelo del vehiculo es obligatorio.');
+  if (!/^\d{4}$/.test(data.year.trim())) errors.push('El ano debe tener cuatro digitos.');
+  if (!data.vin.trim()) errors.push('El VIN o serial de carroceria es obligatorio.');
+  if (data.documentType === 'circulation_card' && !data.plate.trim()) {
+    errors.push('La placa es obligatoria cuando se carga carnet de circulacion.');
+  }
+  return errors;
+};
+
 const ValidationPortalPage = () => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const storedIdentity = sessionStorage.getItem('autoPortalIdentity') ?? '';
@@ -159,6 +173,9 @@ const ValidationPortalPage = () => {
 
   const normalizedIdentity = normalizeId(identity);
   const identityIsValid = isValidIdentity(identity);
+  const hasExtractedDocument = Boolean(uploadedFile && extractionMeta.documentValid);
+  const validationErrors = useMemo(() => validateVehicleData(vehicleData), [vehicleData]);
+  const canShowJson = hasExtractedDocument && validationErrors.length === 0;
 
   const finalJson = useMemo(
     () => ({
@@ -175,6 +192,10 @@ const ValidationPortalPage = () => {
     }),
     [extractionMeta, uploadedFile?.name, vehicleData]
   );
+
+  const updateField = (field: keyof VehicleData, value: string) => {
+    setVehicleData((prev) => ({ ...prev, [field]: value }));
+  };
 
   const handleLogin = () => {
     setIdentityTouched(true);
@@ -217,7 +238,7 @@ const ValidationPortalPage = () => {
         ownerId: extracted.vehicle.ownerId || normalizedIdentity
       });
       setExtractionMeta(extracted.meta);
-      setStep('json');
+      setStep('upload');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'No se pudo procesar el documento.';
       setUploadError(message);
@@ -284,7 +305,7 @@ const ValidationPortalPage = () => {
             </div>
           ) : null}
 
-          {step === 'upload' ? (
+          {step === 'upload' && !hasExtractedDocument ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <h2 className="font-display text-lg font-bold text-brand-primary">
@@ -318,30 +339,120 @@ const ValidationPortalPage = () => {
             </div>
           ) : null}
 
-          {step === 'json' ? (
+          {step === 'upload' && hasExtractedDocument ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft">
-              <div className="flex items-start justify-between gap-3">
-                <h2 className="font-display text-lg font-bold text-brand-primary">JSON generado</h2>
+              <h2 className="font-display text-lg font-bold text-brand-primary">Revisa la informacion detectada</h2>
+
+              <div className="mt-5 flex items-center justify-between gap-3 rounded-xl border border-brand-light bg-brand-light/50 px-4 py-3 text-sm text-brand-primary">
+                <div className="min-w-0">
+                  Documento detectado: <strong>{documentTypeLabel[vehicleData.documentType]}</strong>
+                  {uploadedFile ? <span className="text-slate-500"> · {uploadedFile.name}</span> : null}
+                </div>
                 <button
                   type="button"
                   onClick={handleResetDocument}
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-semibold text-slate-500 transition hover:border-rose-400 hover:text-rose-600"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-300 text-sm font-bold text-slate-500 transition hover:border-rose-400 hover:text-rose-600"
                   aria-label="Quitar documento adjunto"
                   title="Quitar documento"
                 >
-                  ×
+                  x
                 </button>
               </div>
 
-              <div className="mt-5 rounded-xl border border-brand-light bg-brand-light/50 px-4 py-3 text-sm text-brand-primary">
-                Documento detectado: <strong>{documentTypeLabel[vehicleData.documentType]}</strong>
-                {uploadedFile ? <span className="text-slate-500"> · {uploadedFile.name}</span> : null}
+              <div className="mt-5 grid gap-4 md:grid-cols-2">
+                <label className="space-y-1 text-sm font-semibold text-slate-700">
+                  <span>Titular</span>
+                  <input value={vehicleData.ownerName} onChange={(event) => updateField('ownerName', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary" />
+                </label>
+                <label className="space-y-1 text-sm font-semibold text-slate-700">
+                  <span>Cedula/RIF</span>
+                  <input value={vehicleData.ownerId} onChange={(event) => updateField('ownerId', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
+                </label>
+                <label className="space-y-1 text-sm font-semibold text-slate-700">
+                  <span>Placa</span>
+                  <input value={vehicleData.plate} onChange={(event) => updateField('plate', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" placeholder="Sin placa si aplica" />
+                </label>
+                <label className="space-y-1 text-sm font-semibold text-slate-700">
+                  <span>VIN / Serial carroceria</span>
+                  <input value={vehicleData.vin} onChange={(event) => updateField('vin', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
+                </label>
+                <label className="space-y-1 text-sm font-semibold text-slate-700">
+                  <span>Serial motor</span>
+                  <input value={vehicleData.engineSerial} onChange={(event) => updateField('engineSerial', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
+                </label>
+                <label className="space-y-1 text-sm font-semibold text-slate-700">
+                  <span>Marca</span>
+                  <input value={vehicleData.brand} onChange={(event) => updateField('brand', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
+                </label>
+                <label className="space-y-1 text-sm font-semibold text-slate-700">
+                  <span>Modelo</span>
+                  <input value={vehicleData.model} onChange={(event) => updateField('model', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
+                </label>
+                <label className="space-y-1 text-sm font-semibold text-slate-700">
+                  <span>Ano</span>
+                  <input value={vehicleData.year} onChange={(event) => updateField('year', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary" />
+                </label>
+                <label className="space-y-1 text-sm font-semibold text-slate-700">
+                  <span>Color</span>
+                  <input value={vehicleData.color} onChange={(event) => updateField('color', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
+                </label>
+                <label className="space-y-1 text-sm font-semibold text-slate-700">
+                  <span>Uso</span>
+                  <select value={vehicleData.useType} onChange={(event) => updateField('useType', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary">
+                    <option value="">Seleccionar</option>
+                    <option value="PARTICULAR">Particular</option>
+                    <option value="COMERCIAL">Comercial</option>
+                    <option value="CARGA">Carga</option>
+                  </select>
+                </label>
+              </div>
+
+              {validationErrors.length > 0 ? (
+                <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
+                  {validationErrors[0]}
+                </div>
+              ) : null}
+
+              <div className="mt-6 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setStep('json')}
+                  disabled={!canShowJson}
+                  className={`btn-primary ${!canShowJson ? 'cursor-not-allowed opacity-50' : ''}`}
+                >
+                  Ver JSON
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {step === 'json' ? (
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft">
+              <h2 className="font-display text-lg font-bold text-brand-primary">JSON generado</h2>
+
+              <div className="mt-5 flex items-center justify-between gap-3 rounded-xl border border-brand-light bg-brand-light/50 px-4 py-3 text-sm text-brand-primary">
+                <div className="min-w-0">
+                  Documento detectado: <strong>{documentTypeLabel[vehicleData.documentType]}</strong>
+                  {uploadedFile ? <span className="text-slate-500"> · {uploadedFile.name}</span> : null}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleResetDocument}
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-300 text-sm font-bold text-slate-500 transition hover:border-rose-400 hover:text-rose-600"
+                  aria-label="Quitar documento adjunto"
+                  title="Quitar documento"
+                >
+                  x
+                </button>
               </div>
 
               <pre className="mt-5 max-h-[520px] overflow-auto rounded-xl bg-brand-primary p-4 text-xs leading-6 text-brand-light">
                 {JSON.stringify(finalJson, null, 2)}
               </pre>
-              <div className="mt-5 flex justify-end">
+              <div className="mt-5 flex justify-end gap-3">
+                <button type="button" onClick={() => setStep('upload')} className="btn-secondary">
+                  Volver a revisar
+                </button>
                 <button type="button" onClick={handleResetDocument} className="btn-primary">
                   Procesar otro documento
                 </button>
