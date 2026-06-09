@@ -250,7 +250,6 @@ const generateQuotePdf = async (quote: PolicyQuote, vehicle: VehicleData, reques
   drawText('Datos del titular', 48, y, 14, true);
   drawRow('Titular', vehicle.ownerName, 48, y - 26);
   drawRow('Cedula/RIF', vehicle.ownerId, 244, y - 26);
-  drawRow('Documento fuente', documentTypeLabel[vehicle.documentType], 390, y - 26);
 
   y -= 88;
   drawText('Datos del vehiculo', 48, y, 14, true);
@@ -729,10 +728,6 @@ const ValidationPortalPage = () => {
                         <div>
                           <dt className="text-xs font-bold uppercase tracking-wide text-slate-500">Cedula/RIF</dt>
                           <dd className="mt-1 font-semibold text-slate-900">{vehicleData.ownerId || '-'}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-xs font-bold uppercase tracking-wide text-slate-500">Documento fuente</dt>
-                          <dd className="mt-1 font-semibold text-slate-900">{documentTypeLabel[vehicleData.documentType]}</dd>
                         </div>
                       </dl>
                     </div>
