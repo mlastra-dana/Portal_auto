@@ -1,6 +1,6 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import exampleCompanyLogoColor from '../../brand/Marca_example/logos/svg/example_company_color.svg';
+import exampleInsuranceLogoColor from '../../brand/Marca_example/logos/svg/example_insurance_color.svg';
 
 const normalizeId = (prefix: string, value: string) => `${prefix}${value.replace(/\D/g, '')}`.toUpperCase();
 const isValidIdentity = (value: string) => /^\d{6,10}$/.test(value.replace(/\D/g, ''));
@@ -14,18 +14,24 @@ const HeroSection = () => {
   const identityIsValid = isValidIdentity(identity);
   const canSubmit = identityIsValid && password.trim().length > 0;
 
+  useEffect(() => {
+    if (sessionStorage.getItem('autoPortalIdentity')) {
+      navigate('/validation', { replace: true });
+    }
+  }, [navigate]);
+
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setTouched(true);
     if (!canSubmit) return;
     sessionStorage.setItem('autoPortalIdentity', normalizeId(identityPrefix, identity));
-    navigate('/validation');
+    navigate('/validation', { replace: true });
   };
 
   return (
     <section className="container-app flex min-h-[calc(100vh-8rem)] items-center justify-center py-8 sm:py-10">
       <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-card sm:p-8">
-        <img src={exampleCompanyLogoColor} alt="Example Company" className="h-14 w-auto" />
+        <img src={exampleInsuranceLogoColor} alt="Example Insurance" className="h-14 w-auto" />
 
         <div className="mt-8">
           <p className="text-xs font-semibold uppercase tracking-wide text-brand-secondary">Auto Portal</p>
