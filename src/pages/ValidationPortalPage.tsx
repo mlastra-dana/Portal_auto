@@ -205,7 +205,7 @@ const requestPolicyQuote = async (quoteRequest: unknown, vehicle: VehicleData): 
   };
 };
 
-const generateQuotePdf = async (quote: PolicyQuote, vehicle: VehicleData, requestPayload: unknown) => {
+const generateQuotePdf = async (quote: PolicyQuote, vehicle: VehicleData) => {
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([612, 792]);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -225,20 +225,21 @@ const generateQuotePdf = async (quote: PolicyQuote, vehicle: VehicleData, reques
     drawText(value || '-', x, rowY - 14, 11, false, primary);
   };
 
-  page.drawRectangle({ x: 0, y: height - 106, width: 612, height: 106, color: primary });
+  page.drawRectangle({ x: 0, y: height - 116, width: 612, height: 116, color: primary });
   try {
     const logoBytes = await fetch(exampleInsuranceLogoWhitePng).then((response) => response.arrayBuffer());
     const logo = await pdfDoc.embedPng(logoBytes);
-    const logoSize = logo.scale(0.18);
-    page.drawImage(logo, { x: 48, y: height - 60, width: logoSize.width, height: logoSize.height });
+    const logoWidth = 170;
+    const logoHeight = logoWidth * (logo.height / logo.width);
+    page.drawImage(logo, { x: 48, y: height - 58, width: logoWidth, height: logoHeight });
   } catch {
     drawText('Example Insurance', 48, height - 48, 22, true, rgb(1, 1, 1));
   }
-  drawText('Cotizacion de poliza de vehiculo', 48, height - 72, 12, false, rgb(0.88, 0.86, 0.95));
+  drawText('Cotizacion de poliza de vehiculo', 48, height - 88, 12, false, rgb(0.88, 0.86, 0.95));
   drawText(quote.quoteId, 456, height - 48, 13, true, rgb(1, 1, 1));
   drawText(`Valida hasta ${quote.validUntil}`, 456, height - 68, 9, false, rgb(0.88, 0.86, 0.95));
 
-  y -= 124;
+  y -= 138;
   drawText('Resumen de cotizacion', 48, y, 16, true, primary);
   page.drawRectangle({ x: 48, y: y - 88, width: 516, height: 70, color: rgb(0.96, 0.94, 1) });
   drawText(quote.planName, 68, y - 38, 15, true, accent);
@@ -275,14 +276,13 @@ const generateQuotePdf = async (quote: PolicyQuote, vehicle: VehicleData, reques
     drawText(value, 420, rowY, 10, true, primary);
   });
 
-  y -= 152;
+  y -= 134;
   drawText('Coberturas incluidas', 48, y, 14, true);
   quote.coverage.forEach((item, index) => {
     drawText(`- ${item}`, 60, y - 26 - index * 18, 10, false, primary);
   });
 
-  drawText('Documento generado para fines demostrativos. Los montos son dummies y deben validarse con el API real de cotizacion.', 48, 72, 8, false, muted);
-  drawText(`Payload tecnico: ${JSON.stringify(requestPayload).slice(0, 170)}...`, 48, 54, 7, false, muted);
+  drawText('Documento generado para fines demostrativos. Los montos son dummies y deben validarse con el API real de cotizacion.', 48, 22, 8, false, muted);
 
   return pdfDoc.save();
 };
@@ -425,7 +425,7 @@ const ValidationPortalPage = () => {
     setQuoteError('');
 
     try {
-      const pdfBytes = await generateQuotePdf(quote, vehicleData, finalJson);
+      const pdfBytes = await generateQuotePdf(quote, vehicleData);
       const pdfBuffer = new ArrayBuffer(pdfBytes.byteLength);
       new Uint8Array(pdfBuffer).set(pdfBytes);
       const blob = new Blob([pdfBuffer], { type: 'application/pdf' });
