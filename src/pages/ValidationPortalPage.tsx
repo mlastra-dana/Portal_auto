@@ -32,7 +32,6 @@ interface PolicyQuote {
   quoteId: string;
   insurer: string;
   planName: string;
-  status: 'approved' | 'review';
   currency: 'USD';
   annualPremium: number;
   monthlyPremium: number;
@@ -196,7 +195,6 @@ const requestPolicyQuote = async (quoteRequest: unknown, vehicle: VehicleData): 
     quoteId: `AUTO-${new Date().getFullYear()}-${String(quoteSeed).padStart(5, '0')}`,
     insurer: 'Example Insurance',
     planName: vehicle.useType === 'COMERCIAL' ? 'Auto Comercial Integral' : 'Auto Proteccion Integral',
-    status: 'approved',
     currency: 'USD',
     annualPremium,
     monthlyPremium: Math.round((annualPremium / 12) * 100) / 100,
@@ -708,9 +706,6 @@ const ValidationPortalPage = () => {
                       <p className="mt-3 text-sm text-slate-600">
                         {vehicleData.brand} {vehicleData.model} {vehicleData.year} · VIN {vehicleData.vin}
                       </p>
-                      <span className="mt-4 inline-flex rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">
-                        Aprobada
-                      </span>
                     </div>
                     <div className="rounded-lg border border-brand-light bg-brand-light/40 p-4">
                       <p className="text-sm font-semibold text-slate-500">Prima mensual</p>
