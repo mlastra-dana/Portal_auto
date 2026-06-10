@@ -39,7 +39,7 @@ const HeroSection = () => {
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-5">
           <label className="block space-y-1 text-sm font-semibold text-slate-700">
-            <span>Cedula o RIF</span>
+            <span>Cédula o RIF</span>
             <div className="flex overflow-hidden rounded-xl border border-slate-300 bg-white transition focus-within:border-brand-secondary">
               <select
                 value={identityPrefix}
@@ -79,7 +79,7 @@ const HeroSection = () => {
           </label>
 
           {touched && !identityIsValid ? (
-            <p className="text-sm font-medium text-rose-700">Ingresa un numero de cedula o RIF valido.</p>
+            <p className="text-sm font-medium text-rose-700">Ingresa un número de cédula o RIF válido.</p>
           ) : null}
 
           <button

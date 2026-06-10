@@ -65,12 +65,17 @@ const emptyExtractionMeta: ExtractionMeta = {
 
 const documentTypeLabel: Record<VehicleDocumentType, string> = {
   certificate_of_origin: 'Certificado de origen',
-  circulation_card: 'Carnet de circulacion',
+  circulation_card: 'Carnet de circulación',
   unknown: 'Documento no reconocido'
 };
 
 const formatCurrency = (currency: string, value: number) => `${currency} ${value.toFixed(2)}`;
 const safePdfText = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const formatConfidence = (value: number | null) => {
+  if (value === null) return 'No disponible';
+  const normalized = value <= 1 ? value * 100 : value;
+  return `${Math.round(normalized)}%`;
+};
 
 const normalizeStoredId = (value: string) => value.replace(/\s+/g, '').toUpperCase();
 const normalizeId = (prefix: string, value: string) => `${prefix}${value.replace(/\D/g, '')}`.toUpperCase();
@@ -126,19 +131,19 @@ const extractVehicleWithLambda = async (file: File): Promise<ExtractedVehiclePay
 
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.message || payload.error || 'Documento invalido o ilegible. Por favor carga un certificado de origen o carnet de circulacion valido y legible.');
+    throw new Error(payload.message || payload.error || 'Documento inválido o ilegible. Por favor carga un certificado de origen o carnet de circulación válido y legible.');
   }
 
   const extraction = payload.extraction as LambdaVehicleExtraction;
   if (!extraction.document_valid || extraction.document_type === 'unknown') {
-    throw new Error('Documento invalido o ilegible. Por favor carga un certificado de origen o carnet de circulacion valido y legible.');
+    throw new Error('Documento inválido o ilegible. Por favor carga un certificado de origen o carnet de circulación válido y legible.');
   }
 
   const vehicle = extraction.vehicle ?? {};
   const hasVin = Boolean(vehicle.vin);
   const hasVehicleDescription = Boolean(vehicle.brand || vehicle.model || vehicle.year || vehicle.plate);
   if (!hasVin || !hasVehicleDescription || (extraction.document_type === 'circulation_card' && !vehicle.plate)) {
-    throw new Error('Documento invalido o ilegible. Por favor carga un certificado de origen o carnet de circulacion valido y legible.');
+    throw new Error('Documento inválido o ilegible. Por favor carga un certificado de origen o carnet de circulación válido y legible.');
   }
 
   return {
@@ -167,14 +172,14 @@ const extractVehicleWithLambda = async (file: File): Promise<ExtractedVehiclePay
 
 const validateVehicleData = (data: VehicleData) => {
   const errors: string[] = [];
-  if (!data.ownerId.trim()) errors.push('La cedula o RIF del titular es obligatoria.');
+  if (!data.ownerId.trim()) errors.push('La cédula o RIF del titular es obligatoria.');
   if (!data.ownerName.trim()) errors.push('El nombre del titular es obligatorio.');
-  if (!data.brand.trim()) errors.push('La marca del vehiculo es obligatoria.');
-  if (!data.model.trim()) errors.push('El modelo del vehiculo es obligatorio.');
-  if (!/^\d{4}$/.test(data.year.trim())) errors.push('El ano debe tener cuatro digitos.');
-  if (!data.vin.trim()) errors.push('El VIN o serial de carroceria es obligatorio.');
+  if (!data.brand.trim()) errors.push('La marca del vehículo es obligatoria.');
+  if (!data.model.trim()) errors.push('El modelo del vehículo es obligatorio.');
+  if (!/^\d{4}$/.test(data.year.trim())) errors.push('El año debe tener cuatro dígitos.');
+  if (!data.vin.trim()) errors.push('El VIN o serial de carrocería es obligatorio.');
   if (data.documentType === 'circulation_card' && !data.plate.trim()) {
-    errors.push('La placa es obligatoria cuando se carga carnet de circulacion.');
+    errors.push('La placa es obligatoria cuando se carga carnet de circulación.');
   }
   return errors;
 };
@@ -194,13 +199,13 @@ const requestPolicyQuote = async (quoteRequest: unknown, vehicle: VehicleData): 
   return {
     quoteId: `AUTO-${new Date().getFullYear()}-${String(quoteSeed).padStart(5, '0')}`,
     insurer: 'Example Insurance',
-    planName: vehicle.useType === 'COMERCIAL' ? 'Auto Comercial Integral' : 'Auto Proteccion Integral',
+    planName: vehicle.useType === 'COMERCIAL' ? 'Auto Comercial Integral' : 'Auto Protección Integral',
     currency: 'USD',
     annualPremium,
     monthlyPremium: Math.round((annualPremium / 12) * 100) / 100,
     deductible: vehicle.useType === 'CARGA' ? 350 : 250,
     liabilityLimit: vehicle.useType === 'CARGA' ? 30000 : 20000,
-    coverage: ['Responsabilidad civil', 'Perdida total', 'Danos a terceros', 'Asistencia vial'],
+    coverage: ['Responsabilidad civil', 'Pérdida total', 'Daños a terceros', 'Asistencia vial'],
     validUntil: new Date(Date.now() + 1000 * 60 * 60 * 24 * 15).toISOString().slice(0, 10)
   };
 };
@@ -235,12 +240,12 @@ const generateQuotePdf = async (quote: PolicyQuote, vehicle: VehicleData) => {
   } catch {
     drawText('Example Insurance', 48, height - 48, 22, true, rgb(1, 1, 1));
   }
-  drawText('Cotizacion de poliza de vehiculo', 48, height - 88, 12, false, rgb(0.88, 0.86, 0.95));
+  drawText('Cotización de póliza de vehículo', 48, height - 88, 12, false, rgb(0.88, 0.86, 0.95));
   drawText(quote.quoteId, 456, height - 48, 13, true, rgb(1, 1, 1));
   drawText(`Valida hasta ${quote.validUntil}`, 456, height - 68, 9, false, rgb(0.88, 0.86, 0.95));
 
   y -= 138;
-  drawText('Resumen de cotizacion', 48, y, 16, true, primary);
+  drawText('Resumen de cotización', 48, y, 16, true, primary);
   page.drawRectangle({ x: 48, y: y - 88, width: 516, height: 70, color: rgb(0.96, 0.94, 1) });
   drawText(quote.planName, 68, y - 38, 15, true, accent);
   drawText(`${vehicle.brand} ${vehicle.model} ${vehicle.year}`, 68, y - 58, 11, false, primary);
@@ -250,16 +255,16 @@ const generateQuotePdf = async (quote: PolicyQuote, vehicle: VehicleData) => {
   y -= 128;
   drawText('Datos del titular', 48, y, 14, true);
   drawRow('Titular', vehicle.ownerName, 48, y - 26);
-  drawRow('Cedula/RIF', vehicle.ownerId, 244, y - 26);
+  drawRow('Cédula/RIF', vehicle.ownerId, 244, y - 26);
 
   y -= 88;
-  drawText('Datos del vehiculo', 48, y, 14, true);
+  drawText('Datos del vehículo', 48, y, 14, true);
   drawRow('Marca', vehicle.brand, 48, y - 26);
   drawRow('Modelo', vehicle.model, 182, y - 26);
-  drawRow('Ano', vehicle.year, 316, y - 26);
+  drawRow('Año', vehicle.year, 316, y - 26);
   drawRow('Color', vehicle.color, 420, y - 26);
   drawRow('Placa', vehicle.plate || 'Sin placa', 48, y - 66);
-  drawRow('VIN / Serial carroceria', vehicle.vin, 182, y - 66);
+  drawRow('VIN / Serial carrocería', vehicle.vin, 182, y - 66);
   drawRow('Serial motor', vehicle.engineSerial, 390, y - 66);
 
   y -= 136;
@@ -269,7 +274,7 @@ const generateQuotePdf = async (quote: PolicyQuote, vehicle: VehicleData) => {
     ['Prima anual', formatCurrency(quote.currency, quote.annualPremium)],
     ['Prima mensual', formatCurrency(quote.currency, quote.monthlyPremium)],
     ['Deducible', formatCurrency(quote.currency, quote.deductible)],
-    ['Limite RC', `${quote.currency} ${quote.liabilityLimit.toLocaleString('en-US')}`]
+    ['Límite RC', `${quote.currency} ${quote.liabilityLimit.toLocaleString('en-US')}`]
   ].forEach(([label, value], index) => {
     const rowY = y - 38 - index * 26;
     drawText(label, 60, rowY, 10, false, muted);
@@ -282,7 +287,7 @@ const generateQuotePdf = async (quote: PolicyQuote, vehicle: VehicleData) => {
     drawText(`- ${item}`, 60, y - 26 - index * 18, 10, false, primary);
   });
 
-  drawText('Documento generado para fines demostrativos. Los montos son dummies y deben validarse con el API real de cotizacion.', 48, 22, 8, false, muted);
+  drawText('Documento generado para fines demostrativos. Los montos son dummies y deben validarse con el API real de cotización.', 48, 22, 8, false, muted);
 
   return pdfDoc.save();
 };
@@ -369,7 +374,7 @@ const ValidationPortalPage = () => {
     const allowedTypes = ['application/pdf', 'image/png', 'image/jpeg'];
     const allowedByName = /\.(pdf|png|jpe?g)$/i.test(file.name);
     if (!allowedTypes.includes(file.type) && !allowedByName) {
-      setUploadError('Carga un PDF, PNG o JPG del certificado de origen o carnet de circulacion.');
+      setUploadError('Carga un PDF, PNG o JPG del certificado de origen o carnet de circulación.');
       return;
     }
 
@@ -412,7 +417,7 @@ const ValidationPortalPage = () => {
       setQuote(requestedQuote);
       setStep('quote');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'No se pudo solicitar la cotizacion.';
+      const message = error instanceof Error ? error.message : 'No se pudo solicitar la cotización.';
       setQuoteError(message);
     } finally {
       setIsRequestingQuote(false);
@@ -453,7 +458,7 @@ const ValidationPortalPage = () => {
             {[
               ['1', 'Documento', step === 'json' || step === 'quote'],
               ['2', 'Solicitud', step === 'quote'],
-              ['3', 'Cotizacion', step === 'quote']
+              ['3', 'Cotización', step === 'quote']
             ].map(([number, label, done]) => (
               <div key={String(label)} className="flex items-center gap-3 rounded-xl bg-white/8 px-3 py-3">
                 <span
@@ -471,9 +476,12 @@ const ValidationPortalPage = () => {
 
         <div className="space-y-5">
           {step === 'login' ? (
-            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft">
+            <form className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft" onSubmit={(event) => {
+              event.preventDefault();
+              handleLogin();
+            }}>
               <label className="block space-y-1 text-sm font-semibold text-slate-700">
-                <span>Cedula o RIF</span>
+                <span>Cédula o RIF</span>
                 <div className="flex overflow-hidden rounded-xl border border-slate-300 bg-white transition focus-within:border-brand-secondary">
                   <select
                     value={identityPrefix}
@@ -508,26 +516,25 @@ const ValidationPortalPage = () => {
                 />
               </label>
               {identityTouched && !identityIsValid ? (
-                <p className="mt-2 text-sm font-medium text-rose-700">Ingresa un numero de cedula o RIF valido.</p>
+                <p className="mt-2 text-sm font-medium text-rose-700">Ingresa un número de cédula o RIF válido.</p>
               ) : null}
               <div className="mt-5 flex justify-end">
                 <button
-                  type="button"
-                  onClick={handleLogin}
+                  type="submit"
                   className={`btn-primary ${!canLogin ? 'cursor-not-allowed opacity-50' : ''}`}
                   disabled={!canLogin}
                 >
                   Continuar
                 </button>
               </div>
-            </div>
+            </form>
           ) : null}
 
           {step === 'upload' && !hasExtractedDocument ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <h2 className="font-display text-lg font-bold text-brand-primary">
-                  Carga el certificado de origen o carnet de circulacion
+                  Carga el certificado de origen o carnet de circulación
                 </h2>
                 <span className="rounded-full bg-brand-light px-3 py-1 text-xs font-semibold text-brand-secondary">
                   Titular: {normalizedIdentity}
@@ -540,7 +547,7 @@ const ValidationPortalPage = () => {
                 className="mt-5 flex min-h-44 w-full flex-col items-center justify-center rounded-xl border border-dashed border-brand-lilac bg-brand-light/50 px-4 py-8 text-center transition hover:border-brand-secondary hover:bg-brand-light"
               >
                 <span className="text-sm font-bold text-brand-primary">
-                  {isExtracting ? 'Extrayendo informacion...' : 'Seleccionar documento'}
+                  {isExtracting ? 'Extrayendo información...' : 'Seleccionar documento'}
                 </span>
                 <span className="mt-2 text-xs font-medium text-slate-500">
                   {uploadedFile ? uploadedFile.name : 'PDF, PNG o JPG'}
@@ -559,7 +566,7 @@ const ValidationPortalPage = () => {
 
           {step === 'upload' && hasExtractedDocument ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft">
-              <h2 className="font-display text-lg font-bold text-brand-primary">Revisa la informacion detectada</h2>
+              <h2 className="font-display text-lg font-bold text-brand-primary">Revisa la información detectada</h2>
 
               <div className="mt-5 flex items-center justify-between gap-3 rounded-xl border border-brand-light bg-brand-light/50 px-4 py-3 text-sm text-brand-primary">
                 <div className="min-w-0">
@@ -577,13 +584,32 @@ const ValidationPortalPage = () => {
                 </button>
               </div>
 
+              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                  <span className="font-semibold text-slate-900">Confianza de lectura</span>
+                  <span className="font-bold text-brand-secondary">{formatConfidence(extractionMeta.confidence)}</span>
+                </div>
+                {extractionMeta.messages.length > 0 ? (
+                  <ul className="mt-3 list-disc space-y-1 pl-5">
+                    {extractionMeta.messages.map((message) => (
+                      <li key={message}>{message}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                {extractionMeta.missingFields.length > 0 ? (
+                  <p className="mt-3 font-medium text-amber-800">
+                    Campos por revisar: {extractionMeta.missingFields.join(', ')}
+                  </p>
+                ) : null}
+              </div>
+
               <div className="mt-5 grid gap-4 md:grid-cols-2">
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
                   <span>Titular</span>
                   <input value={vehicleData.ownerName} onChange={(event) => updateField('ownerName', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary" />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
-                  <span>Cedula/RIF</span>
+                  <span>Cédula/RIF</span>
                   <input value={vehicleData.ownerId} onChange={(event) => updateField('ownerId', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
@@ -591,7 +617,7 @@ const ValidationPortalPage = () => {
                   <input value={vehicleData.plate} onChange={(event) => updateField('plate', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" placeholder="Sin placa si aplica" />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
-                  <span>VIN / Serial carroceria</span>
+                  <span>VIN / Serial carrocería</span>
                   <input value={vehicleData.vin} onChange={(event) => updateField('vin', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
@@ -607,7 +633,7 @@ const ValidationPortalPage = () => {
                   <input value={vehicleData.model} onChange={(event) => updateField('model', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
-                  <span>Ano</span>
+                  <span>Año</span>
                   <input value={vehicleData.year} onChange={(event) => updateField('year', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary" />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
@@ -646,7 +672,7 @@ const ValidationPortalPage = () => {
 
           {step === 'json' ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft">
-              <h2 className="font-display text-lg font-bold text-brand-primary">Solicitud de cotizacion</h2>
+              <h2 className="font-display text-lg font-bold text-brand-primary">Solicitud de cotización</h2>
 
               <div className="mt-5 flex items-center justify-between gap-3 rounded-xl border border-brand-light bg-brand-light/50 px-4 py-3 text-sm text-brand-primary">
                 <div className="min-w-0">
@@ -688,7 +714,7 @@ const ValidationPortalPage = () => {
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div>
                       <img src={exampleInsuranceLogoWhite} alt="Example Insurance" className="h-12 w-auto" />
-                      <h2 className="mt-1 font-display text-2xl font-bold">Cotizacion de poliza de vehiculo</h2>
+                      <h2 className="mt-1 font-display text-2xl font-bold">Cotización de póliza de vehículo</h2>
                     </div>
                     <div className="text-left sm:text-right">
                       <p className="text-sm font-bold">{quote.quoteId}</p>
@@ -726,14 +752,14 @@ const ValidationPortalPage = () => {
                           <dd className="mt-1 font-semibold text-slate-900">{vehicleData.ownerName || '-'}</dd>
                         </div>
                         <div>
-                          <dt className="text-xs font-bold uppercase tracking-wide text-slate-500">Cedula/RIF</dt>
+                          <dt className="text-xs font-bold uppercase tracking-wide text-slate-500">Cédula/RIF</dt>
                           <dd className="mt-1 font-semibold text-slate-900">{vehicleData.ownerId || '-'}</dd>
                         </div>
                       </dl>
                     </div>
 
                     <div>
-                      <h4 className="font-display text-base font-bold text-brand-primary">Datos del vehiculo</h4>
+                      <h4 className="font-display text-base font-bold text-brand-primary">Datos del vehículo</h4>
                       <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
                         <div>
                           <dt className="text-xs font-bold uppercase tracking-wide text-slate-500">Marca</dt>
@@ -744,7 +770,7 @@ const ValidationPortalPage = () => {
                           <dd className="mt-1 font-semibold text-slate-900">{vehicleData.model || '-'}</dd>
                         </div>
                         <div>
-                          <dt className="text-xs font-bold uppercase tracking-wide text-slate-500">Ano</dt>
+                          <dt className="text-xs font-bold uppercase tracking-wide text-slate-500">Año</dt>
                           <dd className="mt-1 font-semibold text-slate-900">{vehicleData.year || '-'}</dd>
                         </div>
                         <div>
@@ -780,7 +806,7 @@ const ValidationPortalPage = () => {
                           <dd className="font-bold text-slate-900">{formatCurrency(quote.currency, quote.deductible)}</dd>
                         </div>
                         <div className="flex justify-between gap-4">
-                          <dt className="text-slate-500">Limite RC</dt>
+                          <dt className="text-slate-500">Límite RC</dt>
                           <dd className="font-bold text-slate-900">{quote.currency} {quote.liabilityLimit.toLocaleString('en-US')}</dd>
                         </div>
                       </dl>
@@ -799,7 +825,7 @@ const ValidationPortalPage = () => {
                   </div>
 
                   <p className="mt-6 border-t border-slate-200 pt-4 text-xs font-medium text-slate-500">
-                    Documento generado para fines demostrativos. Los montos son dummies y deben validarse con el API real de cotizacion.
+                    Documento generado para fines demostrativos. Los montos son dummies y deben validarse con el API real de cotización.
                   </p>
                 </div>
               </div>
@@ -814,7 +840,7 @@ const ValidationPortalPage = () => {
                   {isGeneratingPdf ? 'Exportando...' : 'Exportar'}
                 </button>
                 <button type="button" onClick={handleResetDocument} className="btn-primary">
-                  Nueva cotizacion
+                  Nueva cotización
                 </button>
               </div>
               {quoteError ? <p className="mt-3 text-right text-sm font-medium text-rose-700">{quoteError}</p> : null}
