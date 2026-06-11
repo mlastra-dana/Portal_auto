@@ -316,6 +316,7 @@ const ValidationPortalPage = () => {
   const hasExtractedDocument = Boolean(uploadedFile && extractionMeta.documentValid);
   const validationErrors = useMemo(() => validateVehicleData(vehicleData), [vehicleData]);
   const canContinue = hasExtractedDocument && validationErrors.length === 0;
+  const [editMode, setEditMode] = useState(false);
 
   const finalJson = useMemo(
     () => ({
@@ -363,6 +364,7 @@ const ValidationPortalPage = () => {
     setIsRequestingQuote(false);
     setIsGeneratingPdf(false);
     setUploadError('');
+    setEditMode(false);
     setStep('upload');
   };
 
@@ -385,6 +387,7 @@ const ValidationPortalPage = () => {
     setQuote(null);
     setQuoteError('');
     setIsExtracting(true);
+    setEditMode(false);
     setStep('upload');
 
     try {
@@ -603,46 +606,112 @@ const ValidationPortalPage = () => {
                 ) : null}
               </div>
 
+              <div className="mt-3 flex flex-col gap-3 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800 sm:flex-row sm:items-center sm:justify-between">
+                <p className="font-medium">
+                  {editMode 
+                    ? 'Modo edición activado: puedes modificar los datos extraídos.' 
+                    : 'Los campos extraídos por OCR están bloqueados para edición.'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setEditMode(!editMode)}
+                  className="shrink-0 rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+                >
+                  {editMode ? 'Bloquear campos' : 'Permitir edición'}
+                </button>
+              </div>
+
               <div className="mt-5 grid gap-4 md:grid-cols-2">
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
                   <span>Titular</span>
-                  <input value={vehicleData.ownerName} onChange={(event) => updateField('ownerName', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary" />
+                  <input 
+                    value={vehicleData.ownerName} 
+                    onChange={(event) => updateField('ownerName', event.target.value)} 
+                    className={`w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary ${!editMode && vehicleData.ownerName.trim() !== '' ? 'bg-slate-50' : ''}`}
+                    readOnly={!editMode && vehicleData.ownerName.trim() !== ''}
+                  />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
                   <span>Cédula/RIF</span>
-                  <input value={vehicleData.ownerId} onChange={(event) => updateField('ownerId', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
+                  <input 
+                    value={vehicleData.ownerId} 
+                    onChange={(event) => updateField('ownerId', event.target.value.toUpperCase())} 
+                    className={`w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary ${!editMode && vehicleData.ownerId.trim() !== '' ? 'bg-slate-50' : ''}`}
+                    readOnly={!editMode && vehicleData.ownerId.trim() !== ''}
+                  />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
                   <span>Placa</span>
-                  <input value={vehicleData.plate} onChange={(event) => updateField('plate', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" placeholder="Sin placa si aplica" />
+                  <input 
+                    value={vehicleData.plate} 
+                    onChange={(event) => updateField('plate', event.target.value.toUpperCase())} 
+                    className={`w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary ${!editMode && vehicleData.plate.trim() !== '' ? 'bg-slate-50' : ''}`}
+                    placeholder="Sin placa si aplica"
+                    readOnly={!editMode && vehicleData.plate.trim() !== ''}
+                  />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
                   <span>VIN / Serial carrocería</span>
-                  <input value={vehicleData.vin} onChange={(event) => updateField('vin', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
+                  <input 
+                    value={vehicleData.vin} 
+                    onChange={(event) => updateField('vin', event.target.value.toUpperCase())} 
+                    className={`w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary ${!editMode && vehicleData.vin.trim() !== '' ? 'bg-slate-50' : ''}`}
+                    readOnly={!editMode && vehicleData.vin.trim() !== ''}
+                  />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
                   <span>Serial motor</span>
-                  <input value={vehicleData.engineSerial} onChange={(event) => updateField('engineSerial', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
+                  <input 
+                    value={vehicleData.engineSerial} 
+                    onChange={(event) => updateField('engineSerial', event.target.value.toUpperCase())} 
+                    className={`w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary ${!editMode && vehicleData.engineSerial.trim() !== '' ? 'bg-slate-50' : ''}`}
+                    readOnly={!editMode && vehicleData.engineSerial.trim() !== ''}
+                  />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
                   <span>Marca</span>
-                  <input value={vehicleData.brand} onChange={(event) => updateField('brand', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
+                  <input 
+                    value={vehicleData.brand} 
+                    onChange={(event) => updateField('brand', event.target.value.toUpperCase())} 
+                    className={`w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary ${!editMode && vehicleData.brand.trim() !== '' ? 'bg-slate-50' : ''}`}
+                    readOnly={!editMode && vehicleData.brand.trim() !== ''}
+                  />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
                   <span>Modelo</span>
-                  <input value={vehicleData.model} onChange={(event) => updateField('model', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
+                  <input 
+                    value={vehicleData.model} 
+                    onChange={(event) => updateField('model', event.target.value.toUpperCase())} 
+                    className={`w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary ${!editMode && vehicleData.model.trim() !== '' ? 'bg-slate-50' : ''}`}
+                    readOnly={!editMode && vehicleData.model.trim() !== ''}
+                  />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
                   <span>Año</span>
-                  <input value={vehicleData.year} onChange={(event) => updateField('year', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary" />
+                  <input 
+                    value={vehicleData.year} 
+                    onChange={(event) => updateField('year', event.target.value)} 
+                    className={`w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary ${!editMode && vehicleData.year.trim() !== '' ? 'bg-slate-50' : ''}`}
+                    readOnly={!editMode && vehicleData.year.trim() !== ''}
+                  />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
                   <span>Color</span>
-                  <input value={vehicleData.color} onChange={(event) => updateField('color', event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary" />
+                  <input 
+                    value={vehicleData.color} 
+                    onChange={(event) => updateField('color', event.target.value.toUpperCase())} 
+                    className={`w-full rounded-xl border border-slate-300 px-3 py-2 text-sm uppercase outline-none focus:border-brand-secondary ${!editMode && vehicleData.color.trim() !== '' ? 'bg-slate-50' : ''}`}
+                    readOnly={!editMode && vehicleData.color.trim() !== ''}
+                  />
                 </label>
                 <label className="space-y-1 text-sm font-semibold text-slate-700">
                   <span>Uso</span>
-                  <select value={vehicleData.useType} onChange={(event) => updateField('useType', event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary">
+                  <select 
+                    value={vehicleData.useType} 
+                    onChange={(event) => updateField('useType', event.target.value)} 
+                    className={`w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-secondary ${!editMode && vehicleData.useType.trim() !== '' ? 'bg-slate-50' : ''}`}
+                    disabled={!editMode && vehicleData.useType.trim() !== ''}
+                  >
                     <option value="">Seleccionar</option>
                     <option value="PARTICULAR">Particular</option>
                     <option value="COMERCIAL">Comercial</option>
