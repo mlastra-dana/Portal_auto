@@ -1,3 +1,113 @@
+# Portal Auto - API de documentos vehiculares
+
+Este repositorio conserva el frontend historico del portal, pero el flujo actual
+de entrega se centra en exponer una API backend-to-backend para validar
+documentos vehiculares y generar un JSON estructurado para cotizacion.
+
+## Estado actual de la API
+
+### Endpoint productivo
+
+```http
+POST https://7tve2roaxc.execute-api.us-east-1.amazonaws.com/danaconnect/vehicle-document
+```
+
+### Componentes AWS
+
+| Recurso | Nombre / valor |
+| --- | --- |
+| Region | `us-east-1` / United States (N. Virginia) |
+| Lambda | `Portal_auto` |
+| API Gateway | `danaconnect-vehicle-document-api` |
+| API Gateway ID | `7tve2roaxc` |
+| Stage | `danaconnect` |
+| Resource path | `/vehicle-document` |
+| Method | `POST` |
+| Authorization | `NONE` |
+| API key required | `true` |
+| API key | `MS-vehicle-document-prod-key` |
+| API key ID | `ikaci1uthe` |
+| Usage plan | `danaconnect-vehicle-document-prod-plan` |
+| Usage plan ID | `rbj7v6` |
+
+### Seguridad
+
+El API esta protegido mediante API Gateway REST API con API key. El consumidor
+debe enviar el header:
+
+```http
+x-api-key: API_KEY_ENTREGADA_POR_DANACONNECT
+```
+
+La API key no debe documentarse con su valor real dentro del repositorio. Debe
+entregarse al cliente por un canal seguro.
+
+### Contrato de entrada
+
+El consumidor debe enviar el archivo en Base64:
+
+```json
+{
+  "document": {
+    "fileName": "carnet.pdf",
+    "contentType": "application/pdf",
+    "content_base64": "BASE64_DEL_ARCHIVO"
+  }
+}
+```
+
+Formatos soportados:
+
+- `application/pdf`
+- `image/png`
+- `image/jpeg`
+
+Documentos aceptados:
+
+- Carnet / certificado de circulacion (`circulation_card`)
+- Titulo / certificado de origen / certificado de registro vehicular (`certificate_of_origin`)
+
+### Contrato de salida
+
+La respuesta exitosa devuelve:
+
+- `document`: validez, tipo detectado y metadatos minimos del documento.
+- `quoteRequest`: JSON estructurado para iniciar solicitud de cotizacion.
+
+El response no devuelve la extraccion OCR/IA completa para mantener el contrato
+compacto para el cliente.
+
+### Notas operativas
+
+- API Gateway REST API tiene timeout maximo de 29 segundos para integraciones Lambda.
+- En pruebas con documento real, el flujo completo respondio en aproximadamente 17 segundos.
+- Si el procesamiento supera 29 segundos, habria que evaluar un flujo asincrono.
+- El usage plan no tiene cuota ni throttling configurado actualmente.
+- El metodo `POST` ya exige API key; una llamada sin `x-api-key` responde `403 Forbidden`.
+- Una llamada con API key valida y body incompleto llega a Lambda y responde validacion `400`.
+
+### Documentacion de entrega
+
+- Documentacion tecnica corta para cliente: [`docs/api-vehicle-document.md`](docs/api-vehicle-document.md)
+- Version PDF para compartir: [`docs/api-vehicle-document.pdf`](docs/api-vehicle-document.pdf)
+- Correo interno con preguntas para Sarina: [`docs/correo-cliente-api-vehicle-document.md`](docs/correo-cliente-api-vehicle-document.md)
+
+### Pendientes funcionales
+
+- Redeployar Lambda despues de cambios en `amplify/functions/nombre-funcion/handler.py`.
+- Reprobar `PicantoTitulo.pdf` para confirmar que se clasifica como `certificate_of_origin`.
+- Confirmar con el cliente si el bloque `quote` debe mantenerse como:
+
+```json
+{
+  "product": "auto_policy"
+}
+```
+
+o si ellos proveeran un esquema especifico.
+
+---
+
 # Example Company - Autogestion Vehicular
 
 Aplicacion web construida con React + Vite + TypeScript + TailwindCSS para registrar informacion de vehiculos orientada a seguros de autos.
