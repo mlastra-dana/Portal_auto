@@ -17,7 +17,9 @@ POST https://7tve2roaxc.execute-api.us-east-1.amazonaws.com/danaconnect/vehicle-
 | Recurso | Nombre / valor |
 | --- | --- |
 | Region | `us-east-1` / United States (N. Virginia) |
-| Lambda | `Portal_auto` |
+| Lambda productiva | `Portal_auto` |
+| Lambda demo | `Portal_auto_demo` |
+| Function URL demo | `https://paa6quj6f4pjywpih25da2qm6i0wujof.lambda-url.us-east-1.on.aws/` |
 | API Gateway | `danaconnect-vehicle-document-api` |
 | API Gateway ID | `7tve2roaxc` |
 | Stage | `danaconnect` |
@@ -41,6 +43,31 @@ x-api-key: API_KEY_ENTREGADA_POR_DANACONNECT
 
 La API key no debe documentarse con su valor real dentro del repositorio. Debe
 entregarse al cliente por un canal seguro.
+
+La Lambda productiva `Portal_auto` debe quedar accesible desde API Gateway. La
+Function URL directa de esta Lambda debe deshabilitarse cuando el demo este
+apuntando a `Portal_auto_demo`.
+
+La Lambda `Portal_auto_demo` existe para el demo comercial y se consume desde:
+
+```http
+POST https://paa6quj6f4pjywpih25da2qm6i0wujof.lambda-url.us-east-1.on.aws/
+```
+
+Usa extraccion real con Bedrock/Textract, pero conserva el response historico
+esperado por el frontend demo:
+
+```json
+{
+  "ok": true,
+  "action": "extract_vehicle_document",
+  "extraction": {
+    "document_valid": true,
+    "document_type": "certificate_of_origin",
+    "vehicle": {}
+  }
+}
+```
 
 ### Contrato de entrada
 
@@ -85,6 +112,8 @@ compacto para el cliente.
 - El usage plan no tiene cuota ni throttling configurado actualmente.
 - El metodo `POST` ya exige API key; una llamada sin `x-api-key` responde `403 Forbidden`.
 - Una llamada con API key valida y body incompleto llega a Lambda y responde validacion `400`.
+- El frontend demo no debe apuntar a `Portal_auto`, porque esa Lambda devuelve el contrato productivo `document` + `quoteRequest`.
+- El frontend demo debe apuntar a la Function URL de `Portal_auto_demo`.
 
 ### Documentacion de entrega
 
