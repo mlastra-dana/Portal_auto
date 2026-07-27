@@ -30,9 +30,21 @@ textract = boto3.client(
 CORS_HEADERS = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization,x-api-key",
     "Access-Control-Allow-Methods": "OPTIONS,POST",
 }
+
+DOCUMENT_TYPE_LABELS = {
+    "certificate_of_origin": "Certificado de origen",
+    "circulation_card": "Carnet de circulación",
+    "unknown": "Documento no reconocido",
+}
+
+QUOTE_DEFAULTS = {
+    "product": "auto_policy",
+}
+
+SUPPORTED_ACTIONS = {"extract_vehicle_document", "request_vehicle_policy_quote"}
 
 
 def response(status_code: int, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -48,6 +60,10 @@ def parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
     if event.get("isBase64Encoded"):
         raw_body = base64.b64decode(raw_body).decode("utf-8")
     return json.loads(raw_body)
+
+
+def http_method(event: Dict[str, Any]) -> str:
+    return event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method", "POST")
 
 
 def normalize_text(value: Any) -> Optional[str]:
@@ -137,29 +153,39 @@ def decode_document(document: Dict[str, Any]) -> bytes:
 
 def detect_document_type_from_text(text: str) -> str:
     upper = text.upper()
-    if "CERTIFICADO DE CIRCULACION" in upper or "CERTIFICADO DE CIRCULACIÓN" in upper:
-        return "circulation_card"
     if "CERTIFICADO DE ORIGEN" in upper:
         return "certificate_of_origin"
     if "CERTIFICADO DE REGISTRO DE VEHICULO" in upper or "CERTIFICADO DE REGISTRO DE VEHÍCULO" in upper:
         return "certificate_of_origin"
     if "TITULO" in upper or "TÍTULO" in upper:
         return "certificate_of_origin"
+    if "CERTIFICADO DE CIRCULACION" in upper or "CERTIFICADO DE CIRCULACIÓN" in upper:
+        return "circulation_card"
+    return "unknown"
+
+
+def detect_document_type_from_filename(document: Dict[str, Any]) -> str:
+    filename = filename_of(document).lower()
+    if "carnet" in filename or "circulacion" in filename or "circulation" in filename:
+        return "circulation_card"
+    if "origen" in filename or "titulo" in filename or "title" in filename or "propiedad" in filename:
+        return "certificate_of_origin"
+    if "registro" in filename and ("vehiculo" in filename or "vehicular" in filename):
+        return "certificate_of_origin"
     return "unknown"
 
 
 def detect_document_type(document: Dict[str, Any], text: Optional[str] = None) -> str:
+    filename_detected = detect_document_type_from_filename(document)
+    if filename_detected == "certificate_of_origin":
+        return filename_detected
+
     if text:
         detected = detect_document_type_from_text(text)
         if detected != "unknown":
             return detected
 
-    filename = filename_of(document).lower()
-    if "carnet" in filename or "circulacion" in filename or "circulation" in filename:
-        return "circulation_card"
-    if "certificado" in filename or "origen" in filename or "titulo" in filename or "title" in filename:
-        return "certificate_of_origin"
-    return "unknown"
+    return filename_detected
 
 
 def empty_vehicle(document_type: str) -> Dict[str, Any]:
@@ -197,6 +223,78 @@ def missing_fields_for(vehicle: Dict[str, Any]) -> List[str]:
     return missing
 
 
+def confidence_as_percentage(value: Any) -> Optional[float]:
+    if not isinstance(value, (int, float)):
+        return None
+    return round(float(value) * 100, 2) if value <= 1 else round(float(value), 2)
+
+
+def public_vehicle_payload(vehicle: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "documentType": vehicle.get("documentType"),
+        "ownerId": vehicle.get("ownerId"),
+        "ownerName": vehicle.get("ownerName"),
+        "plate": vehicle.get("plate"),
+        "vin": vehicle.get("vin"),
+        "engineSerial": vehicle.get("engineSerial"),
+        "brand": vehicle.get("brand"),
+        "model": vehicle.get("model"),
+        "year": vehicle.get("year"),
+        "color": vehicle.get("color"),
+        "vehicleClass": vehicle.get("vehicleClass"),
+        "useType": vehicle.get("useType"),
+    }
+
+
+def build_quote_request(extraction: Dict[str, Any]) -> Dict[str, Any]:
+    vehicle = extraction.get("vehicle") or {}
+    return {
+        "action": "request_vehicle_policy_quote",
+        "applicant": {
+            "identity": vehicle.get("ownerId"),
+            "name": vehicle.get("ownerName"),
+        },
+        "vehicle": public_vehicle_payload(vehicle),
+        "quote": QUOTE_DEFAULTS,
+    }
+
+
+def build_public_extraction_response(document: Dict[str, Any], extraction: Dict[str, Any]) -> Dict[str, Any]:
+    document_type = extraction.get("document_type") or "unknown"
+    missing_fields = extraction.get("missing_fields")
+    messages = extraction.get("messages")
+
+    return {
+        "ok": True,
+        "document": {
+            "valid": bool(extraction.get("document_valid")),
+            "type": document_type,
+            "label": DOCUMENT_TYPE_LABELS.get(document_type, DOCUMENT_TYPE_LABELS["unknown"]),
+            "fileName": filename_of(document),
+            "confidence": confidence_as_percentage(extraction.get("confidence")),
+            "missingFields": missing_fields if isinstance(missing_fields, list) else [],
+            "messages": messages if isinstance(messages, list) else [],
+        },
+        "quoteRequest": build_quote_request(extraction),
+    }
+
+
+def invalid_document_body(extraction: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    document_type = (extraction or {}).get("document_type") or "unknown"
+    return {
+        "ok": False,
+        "message": "Documento inválido o ilegible. Por favor carga un certificado de origen o carnet de circulación válido y legible.",
+        "document": {
+            "valid": False,
+            "type": document_type,
+            "label": DOCUMENT_TYPE_LABELS.get(document_type, DOCUMENT_TYPE_LABELS["unknown"]),
+            "confidence": confidence_as_percentage((extraction or {}).get("confidence")),
+            "missingFields": (extraction or {}).get("missing_fields") or [],
+            "messages": (extraction or {}).get("messages") or [],
+        },
+    }
+
+
 def is_invalid_or_illegible(extraction: Dict[str, Any]) -> bool:
     document_type = extraction.get("document_type")
     vehicle = extraction.get("vehicle") or {}
@@ -222,11 +320,7 @@ def is_invalid_or_illegible(extraction: Dict[str, Any]) -> bool:
 
 
 def invalid_document_response(extraction: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return response(422, {
-        "ok": False,
-        "message": "Documento inválido o ilegible. Por favor carga un certificado de origen o carnet de circulación válido y legible.",
-        "extraction": extraction,
-    })
+    return response(422, invalid_document_body(extraction))
 
 
 def safe_json_loads(raw: str) -> Dict[str, Any]:
@@ -288,8 +382,9 @@ Esquema exacto:
 }}
 
 Reglas de identificación:
-- document_type = "circulation_card" si ves "CERTIFICADO DE CIRCULACIÓN" o carnet INTT.
-- document_type = "certificate_of_origin" si ves certificado de origen, certificado de registro, título o propiedad del vehículo.
+- document_type = "certificate_of_origin" si el documento principal es certificado de origen, certificado de registro, título o propiedad del vehículo.
+- document_type = "circulation_card" si el documento principal es carnet o certificado de circulación del INTT.
+- Si el archivo contiene varias secciones y una de ellas es certificado de registro, título, propiedad o certificado de origen, clasifica el documento principal como "certificate_of_origin", aunque también aparezcan menciones a circulación.
 - En certificado de origen puede no existir placa; eso no invalida el documento.
 - En carnet de circulación, placa y vin son campos críticos.
 
@@ -466,7 +561,7 @@ def handle_extract_vehicle_document(body: Dict[str, Any]) -> Dict[str, Any]:
         extraction = extract_with_bedrock(file_bytes, document, ocr_text)
         if is_invalid_or_illegible(extraction):
             return invalid_document_response(extraction)
-        return response(200, {"ok": True, "action": "extract_vehicle_document", "extraction": extraction})
+        return response(200, build_public_extraction_response(document, extraction))
     except Exception as exc:
         logger.exception("No se pudo extraer con Bedrock")
         if ocr_text:
@@ -475,12 +570,7 @@ def handle_extract_vehicle_document(body: Dict[str, Any]) -> Dict[str, Any]:
                 return invalid_document_response(fallback_extraction)
             return response(
                 200,
-                {
-                    "ok": True,
-                    "action": "extract_vehicle_document",
-                    "extraction": fallback_extraction,
-                    "warning": str(exc),
-                },
+                build_public_extraction_response(document, fallback_extraction),
             )
         return response(
             500,
@@ -493,7 +583,7 @@ def handle_extract_vehicle_document(body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def lambda_handler(event, context):
-    method = event.get("requestContext", {}).get("http", {}).get("method", "POST")
+    method = http_method(event)
 
     if method == "OPTIONS":
         return response(200, {"ok": True})
@@ -506,13 +596,13 @@ def lambda_handler(event, context):
         return response(400, {"ok": False, "message": "Body JSON inválido."})
 
     action = body.get("action") or "extract_vehicle_document"
-    if action != "extract_vehicle_document":
+    if action not in SUPPORTED_ACTIONS:
         return response(
             400,
             {
                 "ok": False,
                 "message": "Acción no soportada por ahora.",
-                "supported_actions": ["extract_vehicle_document"],
+                "supported_actions": sorted(SUPPORTED_ACTIONS),
             },
         )
 
