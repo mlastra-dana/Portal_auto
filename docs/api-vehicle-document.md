@@ -1,6 +1,6 @@
 # DanaConnect Vehicle Document API
 
-API para validar documentos vehiculares y devolver un JSON estructurado para solicitud de cotización.
+API para validar documentos vehiculares y devolver los datos extraídos del vehículo.
 
 ## Endpoint
 
@@ -25,17 +25,48 @@ x-api-key: API_KEY_ENTREGADA_POR_DANACONNECT
 
 ## Request
 
-El archivo debe enviarse codificado en Base64.
+El documento puede enviarse de dos formas.
+
+El archivo se envía dentro del campo `document.source`. Este campo admite dos
+valores:
+
+- contenido del archivo en Base64;
+- referencia S3 del archivo ya cargado.
+
+### Opción A: archivo en Base64
 
 ```json
 {
   "document": {
     "fileName": "carnet.pdf",
     "contentType": "application/pdf",
-    "content_base64": "BASE64_DEL_ARCHIVO"
+    "source": "BASE64_DEL_ARCHIVO"
   }
 }
 ```
+
+### Opción B: referencia a S3
+
+```json
+{
+  "document": {
+    "fileName": "carnet.pdf",
+    "contentType": "application/pdf",
+    "source": "s3://mercantilseguros-dana/WS/2026/7/documento.pdf"
+  }
+}
+```
+
+Nota operativa: el bucket confirmado para este flujo es
+`mercantilseguros-dana` y la ruta del documento debe ubicarse bajo el prefijo
+`WS/`.
+
+También se mantiene compatibilidad con `content_base64`, `s3_uri`,
+`s3_bucket` + `s3_key` y `s3_url`, pero el contrato recomendado para nuevas
+integraciones es `document.source`.
+
+Si se usa una referencia S3, la Lambda debe tener permiso de lectura sobre el
+objeto enviado.
 
 Formatos soportados:
 
@@ -58,6 +89,10 @@ Formatos soportados:
 200 OK
 ```
 
+La API solo devuelve datos extraídos del documento. Si un dato no aparece con
+claridad, el campo se devuelve como `null` y puede aparecer en `missingFields`.
+No se completan campos por inferencia, valores esperados o conocimiento externo.
+
 ```json
 {
   "ok": true,
@@ -70,29 +105,22 @@ Formatos soportados:
     "missingFields": [],
     "messages": []
   },
-  "quoteRequest": {
-    "action": "request_vehicle_policy_quote",
-    "applicant": {
-      "identity": "V24657722",
-      "name": "MARIA MILAGROS LASTRA PEREZ"
-    },
-    "vehicle": {
-      "documentType": "circulation_card",
-      "ownerId": "V24657722",
-      "ownerName": "MARIA MILAGROS LASTRA PEREZ",
-      "plate": "AA635EE",
-      "vin": "KNABA24337T371160",
-      "engineSerial": "G4HG6187613",
-      "brand": "KIA",
-      "model": "PICANTO EX",
-      "year": "2007",
-      "color": "AZUL",
-      "vehicleClass": "AUTOMOVIL SEDAN",
-      "useType": "PARTICULAR"
-    },
-    "quote": {
-      "product": "auto_policy"
-    }
+  "vehicle": {
+    "documentType": "circulation_card",
+    "ownerId": "V24657722",
+    "ownerName": "MARIA MILAGROS LASTRA PEREZ",
+    "plate": "AA635EE",
+    "vin": "KNABA24337T371160",
+    "engineSerial": "G4HG6187613",
+    "brand": "KIA",
+    "model": "PICANTO EX",
+    "year": "2007",
+    "color": "AZUL",
+    "vehicleClass": "AUTOMOVIL SEDAN",
+    "useType": "PARTICULAR",
+    "weightKg": "400",
+    "axles": "2",
+    "seats": "5"
   }
 }
 ```
@@ -122,8 +150,8 @@ Formatos soportados:
   "ok": false,
   "message": "Documento inválido.",
   "errors": [
-    "fileName es requerido.",
-    "content_base64 es requerido."
+    "fileName es requerido cuando no puede inferirse desde S3.",
+    "Debe enviarse document.source, content_base64 o una referencia S3."
   ]
 }
 ```
@@ -159,7 +187,7 @@ curl --location 'https://7tve2roaxc.execute-api.us-east-1.amazonaws.com/danaconn
     "document": {
       "fileName": "carnet.pdf",
       "contentType": "application/pdf",
-      "content_base64": "BASE64_DEL_ARCHIVO"
+      "source": "BASE64_DEL_ARCHIVO"
     }
   }'
 ```

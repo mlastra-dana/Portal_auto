@@ -4,6 +4,8 @@ import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
+import urllib.parse
+import urllib.request
 
 import boto3
 from botocore.config import Config
@@ -15,6 +17,7 @@ logger.setLevel(logging.INFO)
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "")
 BEDROCK_MAX_TOKENS = int(os.environ.get("BEDROCK_MAX_TOKENS", "1200"))
+DOCUMENTS_S3_BUCKET = os.environ.get("DOCUMENTS_S3_BUCKET", "mercantilseguros-dana")
 
 bedrock = boto3.client(
     "bedrock-runtime",
@@ -23,6 +26,11 @@ bedrock = boto3.client(
 )
 textract = boto3.client(
     "textract",
+    region_name=AWS_REGION,
+    config=Config(read_timeout=60, connect_timeout=10, retries={"max_attempts": 2}),
+)
+s3 = boto3.client(
+    "s3",
     region_name=AWS_REGION,
     config=Config(read_timeout=60, connect_timeout=10, retries={"max_attempts": 2}),
 )
@@ -102,11 +110,37 @@ def normalize_year(value: Any) -> Optional[str]:
 
 
 def filename_of(document: Dict[str, Any]) -> str:
-    return document.get("fileName") or document.get("filename") or ""
+    explicit_filename = document.get("fileName") or document.get("filename")
+    if explicit_filename:
+        return explicit_filename
+
+    try:
+        _, key = s3_location_of(document)
+    except ValueError:
+        return ""
+    return urllib.parse.unquote(key.rsplit("/", 1)[-1]) if key else ""
 
 
 def content_type_of(document: Dict[str, Any]) -> str:
     return document.get("contentType") or document.get("content_type") or ""
+
+
+def document_source_of(document: Dict[str, Any]) -> str:
+    return str(document.get("source") or "").strip()
+
+
+def is_s3_uri(value: str) -> bool:
+    return value.lower().startswith("s3://")
+
+
+def is_https_s3_url(value: str) -> bool:
+    if not value.lower().startswith("https://"):
+        return False
+    try:
+        parse_s3_url(value)
+        return True
+    except ValueError:
+        return False
 
 
 def extension_of(filename: str) -> str:
@@ -136,19 +170,151 @@ def validate_document(document: Dict[str, Any]) -> List[str]:
     errors: List[str] = []
     filename = filename_of(document)
     if not filename:
-        errors.append("fileName es requerido.")
-    if not document.get("content_base64"):
-        errors.append("content_base64 es requerido.")
+        errors.append("fileName es requerido cuando no puede inferirse desde S3.")
+
+    source = document_source_of(document)
+    has_base64 = bool(document.get("content_base64") or (source and not is_s3_uri(source) and not is_https_s3_url(source)))
+    has_s3_reference = bool(
+        is_s3_uri(source)
+        or is_https_s3_url(source)
+        or document.get("s3_bucket")
+        or document.get("s3Bucket")
+        or document.get("s3_uri")
+        or document.get("s3Uri")
+        or document.get("s3_url")
+        or document.get("s3Url")
+    )
+    if not has_base64 and not has_s3_reference:
+        errors.append("Debe enviarse document.source, content_base64 o una referencia S3.")
+    if has_s3_reference:
+        try:
+            if s3_url_of(document):
+                parse_s3_url(s3_url_of(document) or "")
+            else:
+                s3_location_of(document)
+        except ValueError as exc:
+            errors.append(str(exc))
+
     if filename and not is_pdf_document(document) and not is_image_document(document):
         errors.append("El documento debe ser PDF, PNG o JPG.")
     return errors
 
 
-def decode_document(document: Dict[str, Any]) -> bytes:
+def parse_s3_uri(value: str) -> tuple[str, str]:
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.strip("/"):
+        raise ValueError("s3_uri debe tener formato s3://bucket/key.")
+
+    if not is_valid_s3_bucket_name(parsed.netloc):
+        if not DOCUMENTS_S3_BUCKET:
+            raise ValueError(
+                "Ruta S3 con bucket no estándar. Configure DOCUMENTS_S3_BUCKET para resolver esta ruta."
+            )
+        key = f"{parsed.netloc}{parsed.path}"
+        return DOCUMENTS_S3_BUCKET, urllib.parse.unquote(key.lstrip("/"))
+
+    return parsed.netloc, urllib.parse.unquote(parsed.path.lstrip("/"))
+
+
+def is_valid_s3_bucket_name(value: str) -> bool:
+    return bool(re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", value or ""))
+
+
+def parse_s3_url(value: str) -> tuple[str, str]:
+    parsed = urllib.parse.urlparse(value)
+    host = parsed.netloc.lower()
+    path_parts = [part for part in parsed.path.split("/") if part]
+
+    if parsed.scheme != "https" or not host:
+        raise ValueError("s3_url debe ser una URL HTTPS de S3.")
+
+    if ".s3." in host or host.endswith(".s3.amazonaws.com"):
+        bucket = host.split(".s3", 1)[0]
+        key = "/".join(path_parts)
+    elif host.startswith("s3.") or host == "s3.amazonaws.com":
+        if len(path_parts) < 2:
+            raise ValueError("s3_url debe incluir bucket y key del objeto.")
+        bucket = path_parts[0]
+        key = "/".join(path_parts[1:])
+    else:
+        raise ValueError("s3_url debe apuntar a un host de Amazon S3.")
+
+    if not bucket or not key:
+        raise ValueError("s3_url debe incluir bucket y key del objeto.")
+    return bucket, urllib.parse.unquote(key)
+
+
+def s3_location_of(document: Dict[str, Any]) -> tuple[str, str]:
+    bucket = document.get("s3_bucket") or document.get("s3Bucket")
+    key = document.get("s3_key") or document.get("s3Key")
+    if bucket and key:
+        return str(bucket), str(key).lstrip("/")
+
+    s3_uri = (
+        document_source_of(document)
+        if is_s3_uri(document_source_of(document))
+        else None
+    ) or (
+        document.get("s3_uri")
+        or document.get("s3Uri")
+    )
+    if s3_uri:
+        return parse_s3_uri(str(s3_uri))
+
+    s3_url = document.get("s3_url") or document.get("s3Url")
+    if s3_url:
+        return parse_s3_url(str(s3_url))
+
+    raise ValueError("Referencia S3 inválida. Use s3_uri, s3_url o s3_bucket + s3_key.")
+
+
+def s3_url_of(document: Dict[str, Any]) -> Optional[str]:
+    source = document_source_of(document)
+    if source and is_https_s3_url(source):
+        return source
+
+    value = document.get("s3_url") or document.get("s3Url")
+    return str(value) if value else None
+
+
+def read_s3_url_bytes(value: str) -> bytes:
+    parse_s3_url(value)
+    with urllib.request.urlopen(value, timeout=60) as result:
+        return result.read()
+
+
+def read_document_bytes(document: Dict[str, Any]) -> bytes:
+    source = document_source_of(document)
+    if source and not is_s3_uri(source) and not is_https_s3_url(source):
+        return decode_base64_value(source)
+
+    if document.get("content_base64"):
+        return decode_base64_document(document)
+
+    s3_url = s3_url_of(document)
+    if s3_url:
+        try:
+            return read_s3_url_bytes(s3_url)
+        except Exception as exc:
+            logger.info("No se pudo leer s3_url directamente; se intentará con IAM. error=%s", exc)
+
+    bucket, key = s3_location_of(document)
     try:
-        return base64.b64decode(document.get("content_base64") or "")
+        result = s3.get_object(Bucket=bucket, Key=key)
+        return result["Body"].read()
+    except (ClientError, BotoCoreError) as exc:
+        raise ValueError("No se pudo leer el documento desde S3.") from exc
+
+
+def decode_base64_document(document: Dict[str, Any]) -> bytes:
+    return decode_base64_value(document.get("content_base64") or "")
+
+
+def decode_base64_value(value: str) -> bytes:
+    try:
+        return base64.b64decode(value)
     except Exception as exc:
-        raise ValueError("content_base64 inválido.") from exc
+        raise ValueError("document.source/base64 inválido.") from exc
 
 
 def detect_document_type_from_text(text: str) -> str:
@@ -221,6 +387,14 @@ def missing_fields_for(vehicle: Dict[str, Any]) -> List[str]:
     if vehicle.get("documentType") == "circulation_card" and not vehicle.get("plate"):
         missing.append("plate")
     return missing
+
+
+def merge_missing_fields(raw_missing_fields: Any, vehicle: Dict[str, Any]) -> List[str]:
+    fields: List[str] = []
+    if isinstance(raw_missing_fields, list):
+        fields.extend(str(field) for field in raw_missing_fields if field)
+    fields.extend(missing_fields_for(vehicle))
+    return list(dict.fromkeys(fields))
 
 
 def confidence_as_percentage(value: Any) -> Optional[float]:
@@ -328,13 +502,17 @@ def extract_text_from_textract(file_bytes: bytes, document: Dict[str, Any]) -> O
 
 def build_prompt(ocr_text: Optional[str]) -> str:
     return f"""
-Eres un extractor documental para seguros de autos en Venezuela.
+Eres un extractor documental de vehículos en Venezuela.
 Analiza el documento adjunto. Puede ser:
 - Certificado de origen / certificado de registro / título de propiedad del vehículo.
 - Carnet o certificado de circulación del INTT.
 
 Devuelve exclusivamente JSON válido. No uses markdown ni explicaciones.
 No inventes datos. Si un campo no aparece claramente, usa null.
+No completes campos por conocimiento general, patrones, marcas conocidas, nombres de archivo, valores esperados o contexto del negocio.
+Solo extrae valores que estén visibles en el documento adjunto o en el texto OCR de apoyo.
+Si un valor está parcialmente visible, borroso, ambiguo o no puedes distinguirlo con seguridad, usa null y agrega el campo a missing_fields.
+No corrijas ni normalices un valor si eso requiere adivinar caracteres; conserva únicamente lo legible.
 
 Esquema exacto:
 {{
@@ -357,31 +535,51 @@ Esquema exacto:
     "axles": null,
     "seats": null
   }},
+  "missing_fields": [],
   "messages": []
 }}
 
 Reglas de identificación:
-- document_type = "certificate_of_origin" si el documento principal es certificado de origen, certificado de registro, título o propiedad del vehículo.
-- document_type = "circulation_card" si el documento principal es carnet o certificado de circulación del INTT.
-- Si el archivo contiene varias secciones y una de ellas es certificado de registro, título, propiedad o certificado de origen, clasifica el documento principal como "certificate_of_origin", aunque también aparezcan menciones a circulación.
-- En certificado de origen puede no existir placa; eso no invalida el documento.
-- En carnet de circulación, placa y vin son campos críticos.
+- Solo son documentos válidos: certificado/título de origen/registro vehicular y carnet/certificado de circulación.
+- document_type = "certificate_of_origin" si el documento principal tiene encabezados como "Certificado de Origen", "Certificado de Registro de Vehículo", "Título", "Título de Propiedad" o "Propiedad del Vehículo".
+- document_type = "circulation_card" si el documento principal tiene encabezado "Certificado de Circulación", "Carnet de Circulación" o formato de carnet INTT.
+- Si un PDF contiene varias páginas o secciones, clasifica según el documento principal o encabezado dominante. No clasifiques como "circulation_card" solo porque aparezca una mención secundaria a circulación dentro de un certificado/título.
+- En certificado de origen/título puede no existir placa; eso no invalida el documento.
+- En carnet de circulación, placa y vin/serial de carrocería son campos críticos.
 
 Reglas de extracción:
 - ownerId: cédula/RIF del titular si aparece. Ejemplo del carnet: V24657722.
 - ownerName: nombre completo del titular si aparece. Ejemplo: MARIA MILAGROS LASTRA PEREZ.
 - plate: valor junto a "Placa". Ejemplo: AA635EE.
-- vin: valor junto a Serial N.I.V., NIV, VIN, serial carrocería o chasis. Ejemplo: KNABA24337T371160.
-- engineSerial: serial de motor si aparece claramente.
+- vin: valor junto a "Serial N.I.V.", "S. Carrocería", "NIV", "VIN", "serial carrocería" o "chasis". Ejemplo carnet: 8XBBA42E6B7816125. No uses como vin el número largo superior del carnet si no está etiquetado como N.I.V./carrocería/chasis.
+- engineSerial: serial de motor si aparece claramente; si no aparece, usa null.
 - brand: marca del vehículo. Ejemplo: KIA.
 - model: modelo/versión. Ejemplo: PICANTO EX.
 - year: año del vehículo. Ejemplo: 2007.
 - color: color visible. Ejemplo: AZUL.
-- vehicleClass: clase/tipo. Ejemplo: SEDAN.
+- vehicleClass: clase/tipo. Ejemplos: AUTOMOVIL, SEDAN, CAMIONETA. Si aparecen "AUTOMOVIL" y "SEDAN", conserva el valor más completo posible.
 - useType: uso. Ejemplo: PARTICULAR.
 - weightKg: peso en kg si aparece, sin texto adicional. Ejemplo: 400.
 - axles: número de ejes si aparece. Ejemplo: 2.
 - seats: puestos si aparece. Ejemplo: 5.
+- missing_fields: lista de campos críticos o esperados que no pudieron extraerse con claridad. Usa los nombres del JSON, por ejemplo: ["engineSerial", "color"].
+
+Guía específica para carnet de circulación:
+- Suele mostrar "CERTIFICADO DE CIRCULACIÓN" como título.
+- Extrae "Placa" como plate.
+- Extrae "Serial N.I.V. (S. Carrocería)" como vin.
+- Extrae peso desde "KGS", ejes desde "EJES", color desde el texto de color y puestos desde "PTOS".
+
+Guía específica para certificado de origen/título:
+- Puede llamarse "Certificado de Registro de Vehículo", "Certificado de Origen", "Título" o similar.
+- Puede incluir datos administrativos como fecha de emisión o número de autorización; esos datos pueden ir en messages, pero no reemplazan los campos del vehículo.
+- La placa puede estar ausente; no la inventes.
+
+Control anti-alucinación:
+- Nunca derives marca, modelo, año, color, placa, VIN, serial de motor, peso, ejes o puestos si no se ven en el documento.
+- Nunca uses ejemplos de este prompt como datos reales.
+- Nunca asumas que un vehículo tiene 5 puestos, 2 ejes o uso PARTICULAR si no aparece.
+- Si hay conflicto entre el OCR auxiliar y la imagen/documento adjunto, prioriza lo visible en el documento adjunto.
 
 Texto OCR de apoyo, si existe:
 {ocr_text or "No disponible"}
@@ -454,7 +652,7 @@ def normalize_bedrock_extraction(raw: Dict[str, Any], document: Dict[str, Any], 
         "extraction_source": "bedrock",
         "confidence": float(raw.get("confidence") or 0.8),
         "vehicle": vehicle,
-        "missing_fields": missing_fields_for(vehicle),
+        "missing_fields": merge_missing_fields(raw.get("missing_fields"), vehicle),
         "messages": [str(message) for message in messages],
         "ocr_text": ocr_text,
     }
@@ -482,42 +680,6 @@ def extract_with_bedrock(file_bytes: bytes, document: Dict[str, Any], ocr_text: 
     return normalize_bedrock_extraction(safe_json_loads(raw_text), document, ocr_text)
 
 
-def extract_from_ocr_fallback(document: Dict[str, Any], ocr_text: str) -> Dict[str, Any]:
-    document_type = detect_document_type(document, ocr_text)
-    upper = ocr_text.upper()
-    lines = [line.strip() for line in upper.splitlines() if line.strip()]
-    joined = " ".join(lines)
-
-    vehicle = empty_vehicle(document_type)
-    vehicle.update(
-        {
-            "plate": normalize_plate((re.search(r"PLACA\s*[:.]?\s*([A-Z0-9]{6,7})", joined) or [None, None])[1]),
-            "vin": normalize_vin((re.search(r"(?:SERIAL\s*N\.?I\.?V\.?|VIN|NIV|CHASIS)\s*[:.]?\s*([A-Z0-9]{12,20})", joined) or [None, None])[1]),
-            "year": normalize_year(joined),
-            "ownerId": normalize_id((re.search(r"\b[VEJG]?\d{6,10}\b", joined) or [None])[0]),
-            "brand": normalize_upper((re.search(r"\b(KIA|CHEVROLET|TOYOTA|FORD|HYUNDAI|MAZDA|RENAULT|NISSAN)\b", joined) or [None, None])[1]),
-            "model": normalize_upper((re.search(r"\b(PICANTO\s*EX|COROLLA|ONIX|AVEO|FIESTA|ELANTRA)\b", joined) or [None, None])[1]),
-            "color": normalize_upper((re.search(r"\b(AZUL|BLANCO|NEGRO|GRIS|PLATA|ROJO|VERDE)\b", joined) or [None, None])[1]),
-            "vehicleClass": normalize_upper((re.search(r"\b(SEDAN|CAMIONETA|AUTOMOVIL|MOTO|PICKUP)\b", joined) or [None, None])[1]),
-            "useType": normalize_upper((re.search(r"\b(PARTICULAR|COMERCIAL|CARGA)\b", joined) or [None, None])[1]),
-            "weightKg": normalize_text((re.search(r"\b(\d{3,5})\s*KGS?\b", joined) or [None, None])[1]),
-            "axles": normalize_text((re.search(r"\b(\d+)\s*EJES?\b", joined) or [None, None])[1]),
-            "seats": normalize_text((re.search(r"\b(\d+)\s*PTOS?\b", joined) or [None, None])[1]),
-        }
-    )
-
-    return {
-        "document_valid": document_type != "unknown",
-        "document_type": document_type,
-        "extraction_source": "textract_fallback",
-        "confidence": 0.45,
-        "vehicle": vehicle,
-        "missing_fields": missing_fields_for(vehicle),
-        "messages": ["Extracción heurística usando texto OCR. Revisar campos antes de continuar."],
-        "ocr_text": ocr_text,
-    }
-
-
 def handle_extract_vehicle_document(body: Dict[str, Any]) -> Dict[str, Any]:
     document = body.get("document") or {}
     if not isinstance(document, dict):
@@ -527,7 +689,10 @@ def handle_extract_vehicle_document(body: Dict[str, Any]) -> Dict[str, Any]:
     if errors:
         return response(400, {"ok": False, "message": "Documento inválido.", "errors": errors})
 
-    file_bytes = decode_document(document)
+    try:
+        file_bytes = read_document_bytes(document)
+    except ValueError as exc:
+        return response(400, {"ok": False, "message": "Documento inválido.", "errors": [str(exc)]})
 
     ocr_text: Optional[str] = None
     try:
@@ -543,14 +708,6 @@ def handle_extract_vehicle_document(body: Dict[str, Any]) -> Dict[str, Any]:
         return response(200, build_demo_extraction_response(extraction))
     except Exception as exc:
         logger.exception("No se pudo extraer con Bedrock")
-        if ocr_text:
-            fallback_extraction = extract_from_ocr_fallback(document, ocr_text)
-            if is_invalid_or_illegible(fallback_extraction):
-                return invalid_document_response(fallback_extraction)
-            return response(
-                200,
-                build_demo_extraction_response(fallback_extraction),
-            )
         return response(
             500,
             {

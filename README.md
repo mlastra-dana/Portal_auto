@@ -2,7 +2,7 @@
 
 Este repositorio conserva el frontend historico del portal, pero el flujo actual
 de entrega se centra en exponer una API backend-to-backend para validar
-documentos vehiculares y generar un JSON estructurado para cotizacion.
+documentos vehiculares y devolver los datos extraidos del vehiculo.
 
 ## Estado actual de la API
 
@@ -71,17 +71,43 @@ esperado por el frontend demo:
 
 ### Contrato de entrada
 
-El consumidor debe enviar el archivo en Base64:
+El consumidor debe enviar el archivo o la referencia del archivo en
+`document.source`.
+
+Base64:
 
 ```json
 {
   "document": {
     "fileName": "carnet.pdf",
     "contentType": "application/pdf",
-    "content_base64": "BASE64_DEL_ARCHIVO"
+    "source": "BASE64_DEL_ARCHIVO"
   }
 }
 ```
+
+S3:
+
+```json
+{
+  "document": {
+    "fileName": "carnet.pdf",
+    "contentType": "application/pdf",
+    "source": "s3://mercantilseguros-dana/WS/2026/7/documento.pdf"
+  }
+}
+```
+
+El bucket confirmado para este flujo es `mercantilseguros-dana`; los documentos
+deben estar bajo el prefijo `WS/`.
+
+Se mantiene compatibilidad interna con `content_base64`, `s3_uri`,
+`s3_bucket` + `s3_key` y `s3_url`, pero el contrato recomendado para nuevas
+integraciones es `document.source`.
+
+Para S3, el rol IAM de la Lambda debe tener permiso `s3:GetObject` sobre el
+bucket/ruta recibida. Si el bucket esta en otra cuenta, tambien se requiere
+politica del bucket permitiendo lectura al rol de la Lambda.
 
 Formatos soportados:
 
@@ -99,10 +125,12 @@ Documentos aceptados:
 La respuesta exitosa devuelve:
 
 - `document`: validez, tipo detectado y metadatos minimos del documento.
-- `quoteRequest`: JSON estructurado para iniciar solicitud de cotizacion.
+- `vehicle`: datos extraidos del vehiculo.
 
 El response no devuelve la extraccion OCR/IA completa para mantener el contrato
 compacto para el cliente.
+Los datos del vehiculo deben provenir del documento. Si un campo no aparece con
+claridad, se devuelve `null`; no se completan valores por inferencia.
 
 ### Notas operativas
 
@@ -112,28 +140,18 @@ compacto para el cliente.
 - El usage plan no tiene cuota ni throttling configurado actualmente.
 - El metodo `POST` ya exige API key; una llamada sin `x-api-key` responde `403 Forbidden`.
 - Una llamada con API key valida y body incompleto llega a Lambda y responde validacion `400`.
-- El frontend demo no debe apuntar a `Portal_auto`, porque esa Lambda devuelve el contrato productivo `document` + `quoteRequest`.
+- El frontend demo no debe apuntar a `Portal_auto`, porque esa Lambda devuelve el contrato productivo `document` + `vehicle`.
 - El frontend demo debe apuntar a la Function URL de `Portal_auto_demo`.
 
 ### Documentacion de entrega
 
 - Documentacion tecnica corta para cliente: [`docs/api-vehicle-document.md`](docs/api-vehicle-document.md)
 - Version PDF para compartir: [`docs/api-vehicle-document.pdf`](docs/api-vehicle-document.pdf)
-- Correo interno con preguntas para Sarina: [`docs/correo-cliente-api-vehicle-document.md`](docs/correo-cliente-api-vehicle-document.md)
 
 ### Pendientes funcionales
 
 - Redeployar Lambda despues de cambios en `amplify/functions/nombre-funcion/handler.py`.
-- Reprobar `PicantoTitulo.pdf` para confirmar que se clasifica como `certificate_of_origin`.
-- Confirmar con el cliente si el bloque `quote` debe mantenerse como:
-
-```json
-{
-  "product": "auto_policy"
-}
-```
-
-o si ellos proveeran un esquema especifico.
+- Reprobar con carnet de circulacion y certificado de origen para confirmar el contrato `document` + `vehicle`.
 
 ---
 
