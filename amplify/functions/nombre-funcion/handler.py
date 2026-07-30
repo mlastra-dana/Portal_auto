@@ -3,7 +3,10 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional
+import urllib.parse
+import urllib.request
 
 import boto3
 from botocore.config import Config
@@ -15,6 +18,17 @@ logger.setLevel(logging.INFO)
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "")
 BEDROCK_MAX_TOKENS = int(os.environ.get("BEDROCK_MAX_TOKENS", "1200"))
+DANA_BASE_URL = os.environ.get("DANA_BASE_URL", "https://appserv.danaconnect.com").rstrip("/")
+DANA_TOKEN_URL = os.environ.get("DANA_TOKEN_URL", "https://auth.danaconnect.com/oauth2/token")
+DANA_ACCESS_TOKEN = os.environ.get("DANA_ACCESS_TOKEN", "")
+DANA_CLIENT_ID = os.environ.get("DANA_CLIENT_ID", "")
+DANA_CLIENT_SECRET = os.environ.get("DANA_CLIENT_SECRET", "")
+DANA_OAUTH_SCOPE = os.environ.get("DANA_OAUTH_SCOPE", "")
+DANA_OAUTH_AUTH_METHOD = os.environ.get("DANA_OAUTH_AUTH_METHOD", "basic").lower()
+DANA_TOKEN_AUDIT_PROJECT_ID = os.environ.get("DANA_TOKEN_AUDIT_PROJECT_ID", "")
+DANA_TIMEOUT_SECONDS = int(os.environ.get("DANA_TIMEOUT_SECONDS", "20"))
+DANA_CONVERSATION_DEBUG = os.environ.get("DANA_CONVERSATION_DEBUG", "0")
+LAMBDA_NAME = os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "Portal_auto")
 
 bedrock = boto3.client(
     "bedrock-runtime",
@@ -46,6 +60,24 @@ QUOTE_DEFAULTS = {
 
 SUPPORTED_ACTIONS = {"extract_vehicle_document", "request_vehicle_policy_quote"}
 
+TOKEN_CACHE = {"access_token": "", "expires_at": 0}
+
+TOKEN_AUDIT_FIELD_MAP = {
+    "lambdaName": "LAMBDA_NAME",
+    "modelId": "MODEL_ID",
+    "inputTokens": "TOKEN_INPUT",
+    "outputTokens": "TOKEN_OUTPUT",
+    "totalTokens": "TOKENS_TOTALES",
+    "reasonCode": "RESULTADO_VALIDOC",
+    "fileName": "NOMBRE_ARCHIVO_DOC",
+}
+
+
+class BedrockExtractionError(Exception):
+    def __init__(self, message: str, token_usage: Dict[str, int]):
+        super().__init__(message)
+        self.token_usage = token_usage
+
 
 def response(status_code: int, body: Dict[str, Any]) -> Dict[str, Any]:
     return {
@@ -53,6 +85,136 @@ def response(status_code: int, body: Dict[str, Any]) -> Dict[str, Any]:
         "headers": CORS_HEADERS,
         "body": json.dumps(body, ensure_ascii=False),
     }
+
+
+def post_json(url: str, payload: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers=headers,
+    )
+    with urllib.request.urlopen(request, timeout=DANA_TIMEOUT_SECONDS) as result:
+        raw = result.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+
+def get_dana_access_token() -> str:
+    if DANA_ACCESS_TOKEN:
+        return DANA_ACCESS_TOKEN
+
+    now = int(time.time())
+    if TOKEN_CACHE["access_token"] and TOKEN_CACHE["expires_at"] > now + 60:
+        return TOKEN_CACHE["access_token"]
+
+    if not DANA_CLIENT_ID or not DANA_CLIENT_SECRET:
+        raise ValueError("Faltan credenciales OAuth para registrar auditoría en DANA.")
+
+    form_payload = {"grant_type": "client_credentials"}
+    if DANA_OAUTH_SCOPE:
+        form_payload["scope"] = DANA_OAUTH_SCOPE
+
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+    }
+    if DANA_OAUTH_AUTH_METHOD == "body":
+        form_payload["client_id"] = DANA_CLIENT_ID
+        form_payload["client_secret"] = DANA_CLIENT_SECRET
+    else:
+        credentials = f"{DANA_CLIENT_ID}:{DANA_CLIENT_SECRET}".encode("utf-8")
+        headers["Authorization"] = f"Basic {base64.b64encode(credentials).decode('utf-8')}"
+
+    request = urllib.request.Request(
+        DANA_TOKEN_URL,
+        data=urllib.parse.urlencode(form_payload).encode("utf-8"),
+        method="POST",
+        headers=headers,
+    )
+    with urllib.request.urlopen(request, timeout=DANA_TIMEOUT_SECONDS) as result:
+        token_response = json.loads(result.read().decode("utf-8"))
+
+    access_token = token_response.get("access_token")
+    if not access_token:
+        raise ValueError("DANAconnect no devolvió access_token.")
+
+    TOKEN_CACHE["access_token"] = access_token
+    TOKEN_CACHE["expires_at"] = now + int(token_response.get("expires_in", 300))
+    return access_token
+
+
+def start_conversation_project_url(project_id: str) -> str:
+    encoded_project_id = urllib.parse.quote(str(project_id), safe="")
+    return f"{DANA_BASE_URL}/api/2.0/rest/conversation/ProjectID/{encoded_project_id}/start/data"
+
+
+def parse_bedrock_token_usage(result: Dict[str, Any]) -> Dict[str, int]:
+    usage = result.get("usage") or {}
+    input_tokens = int(usage.get("inputTokens") or usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("outputTokens") or usage.get("output_tokens") or 0)
+    total_tokens = int(usage.get("totalTokens") or usage.get("total_tokens") or input_tokens + output_tokens)
+    return {
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "totalTokens": total_tokens,
+    }
+
+
+def build_token_audit_fields(
+    body: Dict[str, Any],
+    document: Dict[str, Any],
+    extraction: Optional[Dict[str, Any]],
+    token_usage: Dict[str, int],
+    result_code: str,
+) -> Dict[str, str]:
+    del body
+    values = {
+        "lambdaName": LAMBDA_NAME,
+        "modelId": BEDROCK_MODEL_ID,
+        "inputTokens": str(token_usage.get("inputTokens", 0)),
+        "outputTokens": str(token_usage.get("outputTokens", 0)),
+        "totalTokens": str(token_usage.get("totalTokens", 0)),
+        "reasonCode": result_code,
+        "fileName": filename_of(document),
+    }
+    return {
+        field_code: values[key]
+        for key, field_code in TOKEN_AUDIT_FIELD_MAP.items()
+        if field_code and key in values
+    }
+
+
+def record_bedrock_token_usage(
+    body: Dict[str, Any],
+    document: Dict[str, Any],
+    extraction: Optional[Dict[str, Any]],
+    token_usage: Dict[str, int],
+    result_code: str,
+) -> None:
+    if not DANA_TOKEN_AUDIT_PROJECT_ID:
+        return
+
+    fields = build_token_audit_fields(body, document, extraction, token_usage, result_code)
+    logger.info(
+        "token_audit_start_conversation_request project_id=%s total_tokens=%s fields=%s",
+        DANA_TOKEN_AUDIT_PROJECT_ID,
+        token_usage.get("totalTokens", 0),
+        list(fields.keys()),
+    )
+    try:
+        result = post_json(
+            start_conversation_project_url(DANA_TOKEN_AUDIT_PROJECT_ID),
+            fields,
+            {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Bearer {get_dana_access_token()}",
+                "X-DEBUG": DANA_CONVERSATION_DEBUG,
+            },
+        )
+        logger.info("token_audit_start_conversation_response keys=%s", list(result.keys()))
+    except Exception as exc:
+        logger.warning("token_audit_start_conversation_failed error=%s", exc)
 
 
 def parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -481,7 +643,11 @@ def normalize_bedrock_extraction(raw: Dict[str, Any], document: Dict[str, Any], 
     }
 
 
-def extract_with_bedrock(file_bytes: bytes, document: Dict[str, Any], ocr_text: Optional[str]) -> Dict[str, Any]:
+def extract_with_bedrock(
+    file_bytes: bytes,
+    document: Dict[str, Any],
+    ocr_text: Optional[str],
+) -> tuple[Dict[str, Any], Dict[str, int]]:
     if not BEDROCK_MODEL_ID:
         raise ValueError("BEDROCK_MODEL_ID no está configurado en variables de entorno.")
 
@@ -498,9 +664,13 @@ def extract_with_bedrock(file_bytes: bytes, document: Dict[str, Any], ocr_text: 
             "maxTokens": BEDROCK_MAX_TOKENS,
         },
     )
-    raw_text = read_bedrock_text(result)
-    logger.info("Respuesta Bedrock raw=%s", raw_text)
-    return normalize_bedrock_extraction(safe_json_loads(raw_text), document, ocr_text)
+    token_usage = parse_bedrock_token_usage(result)
+    try:
+        raw_text = read_bedrock_text(result)
+        logger.info("Respuesta Bedrock raw=%s", raw_text)
+        return normalize_bedrock_extraction(safe_json_loads(raw_text), document, ocr_text), token_usage
+    except Exception as exc:
+        raise BedrockExtractionError("Bedrock respondió, pero no se pudo normalizar la extracción.", token_usage) from exc
 
 
 def extract_from_ocr_fallback(document: Dict[str, Any], ocr_text: str) -> Dict[str, Any]:
@@ -558,12 +728,26 @@ def handle_extract_vehicle_document(body: Dict[str, Any]) -> Dict[str, Any]:
         ocr_text = None
 
     try:
-        extraction = extract_with_bedrock(file_bytes, document, ocr_text)
+        extraction, token_usage = extract_with_bedrock(file_bytes, document, ocr_text)
         if is_invalid_or_illegible(extraction):
+            record_bedrock_token_usage(body, document, extraction, token_usage, "INVALID_DOCUMENT")
             return invalid_document_response(extraction)
+        record_bedrock_token_usage(body, document, extraction, token_usage, "VALID_DOCUMENT")
         return response(200, build_public_extraction_response(document, extraction))
     except Exception as exc:
         logger.exception("No se pudo extraer con Bedrock")
+        token_usage = (
+            exc.token_usage
+            if isinstance(exc, BedrockExtractionError)
+            else {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+        )
+        record_bedrock_token_usage(
+            body,
+            document,
+            None,
+            token_usage,
+            "VALIDATION_SERVICE_ERROR",
+        )
         if ocr_text:
             fallback_extraction = extract_from_ocr_fallback(document, ocr_text)
             if is_invalid_or_illegible(fallback_extraction):

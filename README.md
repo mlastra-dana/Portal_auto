@@ -211,6 +211,7 @@ Monitoreo y registros
 | Lambda Function URL | Endpoint HTTPS publico utilizado por el frontend. |
 | Amazon Textract | Extraccion OCR auxiliar para imagenes PNG y JPG. |
 | Amazon Bedrock | Analisis documental con Anthropic Claude Sonnet 4.6 y generacion de datos estructurados del vehiculo. |
+| DANAconnect Start Conversation | Registro de consumo de tokens en la lista central `Bedrock_logs` de Mercantil Seguros. |
 | Amazon CloudWatch Logs | Registro de ejecuciones, respuestas y errores de Lambda. |
 | AWS IAM | Administracion de los permisos requeridos por Lambda. |
 | AWS CloudFormation | Aprovisionamiento de la infraestructura administrada mediante Amplify. |
@@ -222,8 +223,49 @@ Monitoreo y registros
 3. AWS Lambda valida y procesa la solicitud.
 4. Para imagenes, Amazon Textract ejecuta el OCR auxiliar.
 5. Amazon Bedrock utiliza Claude Sonnet 4.6 para analizar el documento.
-6. Lambda devuelve al portal los datos estructurados del vehiculo.
-7. CloudWatch registra la ejecucion y los posibles errores.
+6. Lambda toma el `usage` de Bedrock y, si está configurado, registra tokens en `Bedrock_logs`.
+7. Lambda devuelve al portal los datos estructurados del vehiculo.
+8. CloudWatch registra la ejecucion y los posibles errores.
+
+### Auditoria central de tokens
+
+La Lambda puede registrar cada invocacion a Bedrock en la lista DANA `Bedrock_logs`, compartida con otros procesos de Mercantil Seguros.
+
+Variables requeridas para activar la auditoria:
+
+```text
+DANA_TOKEN_AUDIT_PROJECT_ID=203347
+DANA_BASE_URL=https://appserv.danaconnect.com
+DANA_TOKEN_URL=https://auth.danaconnect.com/oauth2/token
+DANA_CLIENT_ID=
+DANA_CLIENT_SECRET=
+DANA_OAUTH_SCOPE=conversation:access2api
+```
+
+Variables opcionales:
+
+```text
+DANA_ACCESS_TOKEN=
+DANA_OAUTH_AUTH_METHOD=basic
+DANA_TIMEOUT_SECONDS=20
+DANA_CONVERSATION_DEBUG=0
+```
+
+Campos enviados a `Bedrock_logs`:
+
+```text
+LAMBDA_NAME
+MODEL_ID
+NOMBRE_ARCHIVO_DOC
+RESULTADO_VALIDOC
+TOKENS_TOTALES
+TOKEN_INPUT
+TOKEN_OUTPUT
+```
+
+`LAMBDA_NAME` se toma automaticamente de `AWS_LAMBDA_FUNCTION_NAME`. Este proceso no envia `TOMADOR_ID` ni `DATA_ID` porque el log central se usa para auditoria de consumo, no para trazabilidad operativa granular de cada flujo.
+
+El registro de auditoria no bloquea el endpoint. Si Start Conversation falla, queda un warning en CloudWatch y la API continua respondiendo al cliente.
 
 ### Consideraciones de costos
 
@@ -233,6 +275,7 @@ Los principales factores de consumo son:
 - Lambda: cantidad de solicitudes, memoria y duracion de cada ejecucion.
 - Textract: cantidad de imagenes o paginas procesadas.
 - Bedrock con Claude Sonnet 4.6: volumen de entrada y tokens de salida.
+- DANAconnect `Bedrock_logs`: registro central de consumo por Lambda, modelo y resultado.
 - CloudWatch: volumen y tiempo de retencion de los logs.
 
 ## Desarrollo local
