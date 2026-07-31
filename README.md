@@ -71,10 +71,27 @@ esperado por el frontend demo:
 
 ### Contrato de entrada
 
-El consumidor debe enviar el archivo o la referencia del archivo en
-`document.source`.
+El endpoint soporta dos formas de consumo:
 
-Base64:
+- **Validacion + Upload DANA:** el consumidor envia el archivo como `multipart/form-data`, campo `file`, y `uploadToDana=true`. La Lambda valida con IA y solo si el documento es valido ejecuta el API Upload de DANA.
+- **Solo validacion/extraccion:** se mantiene el contrato actual por JSON con `document.source` en Base64 o referencia S3.
+
+Multipart recomendado cuando el consumidor quiere que este servicio haga el Upload
+API de DANA:
+
+```http
+Content-Type: multipart/form-data
+
+file: carnet.pdf
+uploadToDana: true
+```
+
+Para recibir archivos por API Gateway REST API, el stage debe tener configurado
+`multipart/form-data` como Binary Media Type. Sin eso, API Gateway entrega el
+archivo como texto y los bytes llegan corruptos a Textract/Bedrock.
+
+JSON/Base64:
+
 
 ```json
 {
@@ -86,7 +103,7 @@ Base64:
 }
 ```
 
-S3:
+JSON/S3:
 
 ```json
 {
@@ -102,8 +119,7 @@ El bucket confirmado para este flujo es `mercantilseguros-dana`; los documentos
 deben estar bajo el prefijo `WS/`.
 
 Se mantiene compatibilidad interna con `content_base64`, `s3_uri`,
-`s3_bucket` + `s3_key` y `s3_url`, pero el contrato recomendado para nuevas
-integraciones es `document.source`.
+`s3_bucket` + `s3_key` y `s3_url`.
 
 Para S3, el rol IAM de la Lambda debe tener permiso `s3:GetObject` sobre el
 bucket/ruta recibida. Si el bucket esta en otra cuenta, tambien se requiere
@@ -126,6 +142,7 @@ La respuesta exitosa devuelve:
 
 - `document`: validez, tipo detectado y metadatos minimos del documento.
 - `vehicle`: datos extraidos del vehiculo.
+- `danaUpload`: solo cuando `uploadToDana=true`; incluye la referencia devuelta por DANA.
 
 El response no devuelve la extraccion OCR/IA completa para mantener el contrato
 compacto para el cliente.

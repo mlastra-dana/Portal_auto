@@ -1,4 +1,6 @@
 import base64
+from email.parser import BytesParser
+from email.policy import default as email_policy
 import json
 import logging
 import os
@@ -25,6 +27,9 @@ DANA_CLIENT_ID = os.environ.get("DANA_CLIENT_ID", "")
 DANA_CLIENT_SECRET = os.environ.get("DANA_CLIENT_SECRET", "")
 DANA_OAUTH_SCOPE = os.environ.get("DANA_OAUTH_SCOPE", "")
 DANA_OAUTH_AUTH_METHOD = os.environ.get("DANA_OAUTH_AUTH_METHOD", "basic").lower()
+DANA_USERNAME = os.environ.get("DANA_USERNAME", "")
+DANA_PASSWORD = os.environ.get("DANA_PASSWORD", "")
+DANA_FILE_UPLOAD_PATH = os.environ.get("DANA_FILE_UPLOAD_PATH", "/dana/conversation/http/rest/file/upload")
 DANA_TOKEN_AUDIT_PROJECT_ID = os.environ.get("DANA_TOKEN_AUDIT_PROJECT_ID", "")
 DANA_TIMEOUT_SECONDS = int(os.environ.get("DANA_TIMEOUT_SECONDS", "20"))
 DANA_CONVERSATION_DEBUG = os.environ.get("DANA_CONVERSATION_DEBUG", "0")
@@ -79,6 +84,10 @@ class BedrockExtractionError(Exception):
     def __init__(self, message: str, token_usage: Dict[str, int]):
         super().__init__(message)
         self.token_usage = token_usage
+
+
+class MultipartRequestError(Exception):
+    pass
 
 
 def response(status_code: int, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -150,6 +159,18 @@ def start_conversation_project_url(project_id: str) -> str:
     return f"{DANA_BASE_URL}/api/2.0/rest/conversation/ProjectID/{encoded_project_id}/start/data"
 
 
+def dana_file_upload_url() -> str:
+    return f"{DANA_BASE_URL}{DANA_FILE_UPLOAD_PATH}"
+
+
+def dana_basic_headers() -> Dict[str, str]:
+    credentials = f"{DANA_USERNAME}:{DANA_PASSWORD}".encode("utf-8")
+    return {
+        "Authorization": f"Basic {base64.b64encode(credentials).decode('utf-8')}",
+        "Accept": "application/json",
+    }
+
+
 def parse_bedrock_token_usage(result: Dict[str, Any]) -> Dict[str, int]:
     usage = result.get("usage") or {}
     input_tokens = int(usage.get("inputTokens") or usage.get("input_tokens") or 0)
@@ -219,11 +240,85 @@ def record_bedrock_token_usage(
         logger.warning("token_audit_start_conversation_failed error=%s", exc)
 
 
-def parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
+def request_header(event: Dict[str, Any], name: str) -> str:
+    headers = event.get("headers") or {}
+    target = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() == target:
+            return str(value or "")
+    return ""
+
+
+def parse_multipart_body(event: Dict[str, Any]) -> Dict[str, Any]:
+    content_type = request_header(event, "content-type")
+    if "multipart/form-data" not in content_type.lower():
+        raise MultipartRequestError("Content-Type debe ser multipart/form-data.")
+
+    raw_body = event.get("body")
+    if not raw_body:
+        raise MultipartRequestError("Body multipart vacío.")
+
+    if not event.get("isBase64Encoded"):
+        raise MultipartRequestError(
+            "API Gateway debe entregar multipart/form-data como base64. "
+            "Configura Binary Media Types para multipart/form-data y despliega el stage."
+        )
+    body_bytes = base64.b64decode(raw_body)
+
+    message_bytes = (
+        f"Content-Type: {content_type}\r\n"
+        "MIME-Version: 1.0\r\n\r\n"
+    ).encode("utf-8") + body_bytes
+    message = BytesParser(policy=email_policy).parsebytes(message_bytes)
+    if not message.is_multipart():
+        raise MultipartRequestError("Body multipart inválido.")
+
+    fields: Dict[str, str] = {}
+    document: Optional[Dict[str, Any]] = None
+    for part in message.iter_parts():
+        if part.get_content_disposition() != "form-data":
+            continue
+        name = part.get_param("name", header="content-disposition")
+        filename = part.get_filename()
+        payload = part.get_payload(decode=True) or b""
+
+        if filename or name == "file":
+            document = {
+                "fileName": filename or "documento",
+                "contentType": part.get_content_type(),
+                "_file_bytes": payload,
+            }
+            continue
+
+        if name:
+            charset = part.get_content_charset() or "utf-8"
+            fields[str(name)] = payload.decode(charset, errors="replace")
+
+    if not document:
+        raise MultipartRequestError("Debe enviarse el archivo en el campo file.")
+    if not document.get("_file_bytes"):
+        raise MultipartRequestError("El archivo recibido está vacío.")
+
+    return {
+        "action": fields.get("action") or "extract_vehicle_document",
+        "document": document,
+        "fields": fields,
+        "uploadToDana": parse_bool(fields.get("uploadToDana") or fields.get("upload_to_dana")),
+    }
+
+
+def parse_json_body(event: Dict[str, Any]) -> Dict[str, Any]:
     raw_body = event.get("body") or "{}"
     if event.get("isBase64Encoded"):
         raw_body = base64.b64decode(raw_body).decode("utf-8")
     return json.loads(raw_body)
+
+
+def parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
+    content_type = request_header(event, "content-type").lower()
+    if "multipart/form-data" in content_type:
+        return parse_multipart_body(event)
+    return parse_json_body(event)
 
 
 def http_method(event: Dict[str, Any]) -> str:
@@ -235,6 +330,10 @@ def normalize_text(value: Any) -> Optional[str]:
         return None
     text = re.sub(r"\s+", " ", str(value)).strip()
     return text or None
+
+
+def parse_bool(value: Any) -> bool:
+    return str(value or "").strip().strip("\"'").lower() in {"true", "1", "si", "sí", "yes", "y"}
 
 
 def normalize_upper(value: Any) -> Optional[str]:
@@ -278,6 +377,13 @@ def filename_of(document: Dict[str, Any]) -> str:
 
 
 def content_type_of(document: Dict[str, Any]) -> str:
+    ext = extension_of(filename_of(document))
+    if ext == "pdf":
+        return "application/pdf"
+    if ext == "png":
+        return "image/png"
+    if ext in {"jpg", "jpeg"}:
+        return "image/jpeg"
     return document.get("contentType") or document.get("content_type") or ""
 
 
@@ -317,6 +423,25 @@ def is_pdf_document(document: Dict[str, Any]) -> bool:
     return extension_of(filename) == "pdf" or content_type == "application/pdf"
 
 
+def file_signature(file_bytes: bytes) -> str:
+    return file_bytes[:8].hex().upper()
+
+
+def validate_document_bytes(file_bytes: bytes, document: Dict[str, Any]) -> Optional[str]:
+    if is_pdf_document(document) and not file_bytes.startswith(b"%PDF"):
+        return "El archivo fue recibido como PDF, pero los bytes no tienen firma PDF válida."
+    if is_image_document(document):
+        ext = extension_of(filename_of(document))
+        content_type = content_type_of(document)
+        expects_png = ext == "png" or content_type == "image/png"
+        expects_jpeg = ext in {"jpg", "jpeg"} or content_type == "image/jpeg"
+        if expects_png and not file_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "El archivo fue recibido como PNG, pero los bytes no tienen firma PNG válida."
+        if expects_jpeg and not file_bytes.startswith(b"\xff\xd8\xff"):
+            return "El archivo fue recibido como JPG/JPEG, pero los bytes no tienen firma JPEG válida."
+    return None
+
+
 def bedrock_image_format(document: Dict[str, Any]) -> str:
     ext = extension_of(filename_of(document))
     return "png" if ext == "png" else "jpeg"
@@ -329,6 +454,7 @@ def validate_document(document: Dict[str, Any]) -> List[str]:
         errors.append("fileName es requerido cuando no puede inferirse desde S3.")
 
     source = document_source_of(document)
+    has_uploaded_file = bool(document.get("_file_bytes"))
     has_base64 = bool(document.get("content_base64") or (source and not is_s3_uri(source) and not is_https_s3_url(source)))
     has_s3_reference = bool(
         is_s3_uri(source)
@@ -340,8 +466,8 @@ def validate_document(document: Dict[str, Any]) -> List[str]:
         or document.get("s3_url")
         or document.get("s3Url")
     )
-    if not has_base64 and not has_s3_reference:
-        errors.append("Debe enviarse document.source, content_base64 o una referencia S3.")
+    if not has_uploaded_file and not has_base64 and not has_s3_reference:
+        errors.append("Debe enviarse document.source, content_base64, una referencia S3 o multipart/form-data campo file.")
     if has_s3_reference:
         try:
             if s3_url_of(document):
@@ -440,6 +566,9 @@ def read_s3_url_bytes(value: str) -> bytes:
 
 
 def read_document_bytes(document: Dict[str, Any]) -> bytes:
+    if document.get("_file_bytes"):
+        return document["_file_bytes"]
+
     source = document_source_of(document)
     if source and not is_s3_uri(source) and not is_https_s3_url(source):
         return decode_base64_value(source)
@@ -471,6 +600,64 @@ def decode_base64_value(value: str) -> bytes:
         return base64.b64decode(value)
     except Exception as exc:
         raise ValueError("document.source/base64 inválido.") from exc
+
+
+def build_multipart_body(field_name: str, file_name: str, content_type: str, file_bytes: bytes) -> tuple[str, bytes]:
+    boundary = f"----portalauto{int(time.time() * 1000)}"
+    header = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{field_name}"; filename="{file_name}"\r\n'
+        f"Content-Type: {content_type}\r\n\r\n"
+    ).encode("utf-8")
+    footer = f"\r\n--{boundary}--\r\n".encode("utf-8")
+    return boundary, header + file_bytes + footer
+
+
+def upload_file_to_dana(document: Dict[str, Any], file_bytes: bytes) -> Dict[str, Any]:
+    if not DANA_USERNAME or not DANA_PASSWORD:
+        raise ValueError("DANA_USERNAME y DANA_PASSWORD son requeridos para File Upload.")
+
+    content_type = content_type_of(document) or "application/octet-stream"
+    boundary, multipart_body = build_multipart_body(
+        "file",
+        filename_of(document),
+        content_type,
+        file_bytes,
+    )
+    request = urllib.request.Request(
+        dana_file_upload_url(),
+        data=multipart_body,
+        method="POST",
+        headers={
+            **dana_basic_headers(),
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "X-DEBUG": DANA_CONVERSATION_DEBUG,
+        },
+    )
+    with urllib.request.urlopen(request, timeout=DANA_TIMEOUT_SECONDS) as result:
+        raw = result.read().decode("utf-8", errors="replace")
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"raw": raw}
+
+
+def build_public_upload_response(upload_result: Dict[str, Any]) -> Dict[str, Any]:
+    file_id = (
+        upload_result.get("fileID")
+        or upload_result.get("fileId")
+        or upload_result.get("id")
+        or upload_result.get("path")
+        or upload_result.get("url")
+    )
+    return {
+        "uploaded": bool(file_id or upload_result),
+        "fileID": file_id,
+        "reference": file_id,
+        "raw": upload_result,
+    }
 
 
 def detect_document_type_from_text(text: str) -> str:
@@ -597,6 +784,10 @@ def build_public_extraction_response(document: Dict[str, Any], extraction: Dict[
         },
         "vehicle": public_vehicle_payload(extraction.get("vehicle") or {}),
     }
+
+
+def should_upload_to_dana(body: Dict[str, Any]) -> bool:
+    return parse_bool(body.get("uploadToDana") or body.get("upload_to_dana"))
 
 
 def invalid_document_body(extraction: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -868,6 +1059,27 @@ def handle_extract_vehicle_document(body: Dict[str, Any]) -> Dict[str, Any]:
         file_bytes = read_document_bytes(document)
     except ValueError as exc:
         return response(400, {"ok": False, "message": "Documento inválido.", "errors": [str(exc)]})
+    byte_error = validate_document_bytes(file_bytes, document)
+    if byte_error:
+        logger.warning(
+            "document_bytes_invalid filename=%s content_type=%s size=%s signature=%s",
+            filename_of(document),
+            content_type_of(document),
+            len(file_bytes),
+            file_signature(file_bytes),
+        )
+        return response(
+            400,
+            {
+                "ok": False,
+                "message": "El archivo llegó corrupto o con un formato diferente al declarado.",
+                "errors": [byte_error],
+                "fileName": filename_of(document),
+                "contentType": content_type_of(document),
+                "size": len(file_bytes),
+                "signature": file_signature(file_bytes),
+            },
+        )
 
     ocr_text: Optional[str] = None
     try:
@@ -882,7 +1094,24 @@ def handle_extract_vehicle_document(body: Dict[str, Any]) -> Dict[str, Any]:
             record_bedrock_token_usage(body, document, extraction, token_usage, "INVALID_DOCUMENT")
             return invalid_document_response(extraction)
         record_bedrock_token_usage(body, document, extraction, token_usage, "VALID_DOCUMENT")
-        return response(200, build_public_extraction_response(document, extraction))
+        response_body = build_public_extraction_response(document, extraction)
+        if should_upload_to_dana(body):
+            try:
+                upload_result = upload_file_to_dana(document, file_bytes)
+                response_body["danaUpload"] = build_public_upload_response(upload_result)
+            except Exception as upload_error:
+                logger.exception("Documento válido, pero falló el Upload API de DANA")
+                return response(
+                    502,
+                    {
+                        "ok": False,
+                        "message": "El documento fue validado, pero no se pudo subir a DANA.",
+                        "error": str(upload_error),
+                        "document": response_body.get("document"),
+                        "vehicle": response_body.get("vehicle"),
+                    },
+                )
+        return response(200, response_body)
     except Exception as exc:
         logger.exception("No se pudo extraer con Bedrock")
         token_usage = (
@@ -908,27 +1137,39 @@ def handle_extract_vehicle_document(body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def lambda_handler(event, context):
-    method = http_method(event)
-
-    if method == "OPTIONS":
-        return response(200, {"ok": True})
-    if method != "POST":
-        return response(405, {"ok": False, "message": "Method not allowed."})
-
     try:
+        method = http_method(event)
+
+        if method == "OPTIONS":
+            return response(200, {"ok": True})
+        if method != "POST":
+            return response(405, {"ok": False, "message": "Method not allowed."})
+
         body = parse_body(event)
+        action = body.get("action") or "extract_vehicle_document"
+        if action not in SUPPORTED_ACTIONS:
+            return response(
+                400,
+                {
+                    "ok": False,
+                    "message": "Acción no soportada por ahora.",
+                    "supported_actions": sorted(SUPPORTED_ACTIONS),
+                },
+            )
+
+        return handle_extract_vehicle_document(body)
+    except MultipartRequestError as exc:
+        return response(400, {"ok": False, "message": "Body multipart inválido.", "errors": [str(exc)]})
     except json.JSONDecodeError:
         return response(400, {"ok": False, "message": "Body JSON inválido."})
-
-    action = body.get("action") or "extract_vehicle_document"
-    if action not in SUPPORTED_ACTIONS:
+    except Exception as exc:
+        logger.exception("Error no controlado en vehicle-document")
         return response(
-            400,
+            500,
             {
                 "ok": False,
-                "message": "Acción no soportada por ahora.",
-                "supported_actions": sorted(SUPPORTED_ACTIONS),
+                "message": "Error interno del servicio.",
+                "error": str(exc),
+                "errorType": type(exc).__name__,
             },
         )
-
-    return handle_extract_vehicle_document(body)
