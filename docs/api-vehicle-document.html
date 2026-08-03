@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>DanaConnect Vehicle Document API</title>
+  <style>
+    @page { margin: 24mm 20mm; }
+    body {
+      color: #172033;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12.5px;
+      line-height: 1.45;
+      margin: 0;
+    }
+    h1 {
+      color: #004987;
+      font-size: 28px;
+      margin: 0 0 8px;
+    }
+    h2 {
+      border-bottom: 1px solid #d8e1ec;
+      color: #004987;
+      font-size: 18px;
+      margin: 26px 0 10px;
+      padding-bottom: 5px;
+    }
+    h3 {
+      color: #163b63;
+      font-size: 14px;
+      margin: 18px 0 8px;
+    }
+    p { margin: 7px 0; }
+    code {
+      background: #eef4fb;
+      border-radius: 3px;
+      color: #003f7a;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      padding: 1px 4px;
+    }
+    pre {
+      background: #f6f8fb;
+      border: 1px solid #d8e1ec;
+      border-radius: 6px;
+      color: #202a3a;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10.5px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+      padding: 12px;
+      white-space: pre-wrap;
+    }
+    table {
+      border-collapse: collapse;
+      margin: 10px 0 16px;
+      width: 100%;
+    }
+    th, td {
+      border: 1px solid #d8e1ec;
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #eef4fb;
+      color: #004987;
+      font-weight: 700;
+    }
+    .note {
+      background: #eef8f1;
+      border-left: 4px solid #16823a;
+      margin: 12px 0;
+      padding: 10px 12px;
+    }
+    .warning {
+      background: #fff7ed;
+      border-left: 4px solid #f28c28;
+      margin: 12px 0;
+      padding: 10px 12px;
+    }
+  </style>
+</head>
+<body>
+  <h1>DanaConnect Vehicle Document API</h1>
+  <p>API para validar documentos vehiculares y devolver los datos extraídos del vehículo.</p>
+
+  <h2>Endpoint</h2>
+  <pre>POST https://7tve2roaxc.execute-api.us-east-1.amazonaws.com/danaconnect/vehicle-document</pre>
+
+  <h2>Autenticación</h2>
+  <p>El endpoint requiere API key en el header:</p>
+  <pre>x-api-key: API_KEY_ENTREGADA_POR_DANACONNECT</pre>
+
+  <h2>Headers</h2>
+  <pre>Content-Type: application/json
+x-api-key: API_KEY_ENTREGADA_POR_DANACONNECT</pre>
+
+  <h2>Request</h2>
+  <p>El endpoint valida y extrae información desde documentos enviados por JSON. No recibe <code>multipart/form-data</code> y no ejecuta API Upload de DANA en esta versión.</p>
+
+  <h3>Opción A: documento en Base64</h3>
+  <pre>{
+  "action": "extract_vehicle_document",
+  "document": {
+    "fileName": "carnet.pdf",
+    "contentType": "application/pdf",
+    "source": "BASE64_DEL_ARCHIVO"
+  }
+}</pre>
+
+  <h3>Opción B: documento por referencia S3</h3>
+  <pre>{
+  "action": "extract_vehicle_document",
+  "document": {
+    "fileName": "carnet.pdf",
+    "contentType": "application/pdf",
+    "source": "s3://WS/2026/7/documento.pdf"
+  }
+}</pre>
+
+  <div class="note">
+    El bucket confirmado para este flujo es <code>mercantilseguros-dana</code> y la ruta del documento debe ubicarse bajo el prefijo <code>WS/</code>. También se acepta la forma completa <code>s3://mercantilseguros-dana/WS/2026/7/documento.pdf</code>.
+  </div>
+
+  <p>También se mantiene compatibilidad con <code>content_base64</code>, <code>s3_uri</code>, <code>s3_bucket</code> + <code>s3_key</code>.</p>
+  <p>Si se usa una referencia S3, el cliente solo debe enviar la ruta del documento. La lectura del objeto, credenciales y permisos son gestionados internamente por el servicio.</p>
+
+  <h2>Formatos Soportados</h2>
+  <table>
+    <thead>
+      <tr><th>Tipo de archivo</th><th>Content-Type</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>PDF</td><td><code>application/pdf</code></td></tr>
+      <tr><td>PNG</td><td><code>image/png</code></td></tr>
+      <tr><td>JPG/JPEG</td><td><code>image/jpeg</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Documentos Aceptados</h2>
+  <table>
+    <thead>
+      <tr><th>Documento</th><th>Valor en response</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Carnet / certificado de circulación</td><td><code>circulation_card</code></td></tr>
+      <tr><td>Título / certificado de origen / certificado de registro vehicular</td><td><code>certificate_of_origin</code></td></tr>
+    </tbody>
+  </table>
+
+  <div class="warning">
+    El documento debe ser legible. Se rechazan imágenes o PDFs borrosos, recortados, oscuros, con reflejos, con baja resolución o con campos críticos no legibles.
+  </div>
+
+  <h2>Response Exitoso</h2>
+  <pre>200 OK</pre>
+  <p>La API solo devuelve datos extraídos del documento. Si un dato no aparece con claridad, el campo se devuelve como <code>null</code> y puede aparecer en <code>missingFields</code>. No se completan campos por inferencia, valores esperados o conocimiento externo.</p>
+  <pre>{
+  "ok": true,
+  "document": {
+    "valid": true,
+    "type": "circulation_card",
+    "label": "Carnet de circulación",
+    "fileName": "carnet.pdf",
+    "confidence": 95,
+    "missingFields": [],
+    "messages": []
+  },
+  "vehicle": {
+    "documentType": "circulation_card",
+    "ownerId": "V24657722",
+    "ownerName": "MARIA MILAGROS LASTRA PEREZ",
+    "plate": "AA635EE",
+    "vin": "KNABA24337T371160",
+    "engineSerial": "G4HG6187613",
+    "brand": "KIA",
+    "model": "PICANTO EX",
+    "year": "2007",
+    "color": "AZUL",
+    "vehicleClass": "AUTOMOVIL SEDAN",
+    "useType": "PARTICULAR",
+    "weightKg": "400",
+    "axles": "2",
+    "seats": "5"
+  }
+}</pre>
+
+  <h2>Errores</h2>
+  <h3>API key ausente o inválida</h3>
+  <pre>403 Forbidden</pre>
+  <pre>{
+  "message": "Forbidden"
+}</pre>
+
+  <h3>Request inválido</h3>
+  <pre>400 Bad Request</pre>
+  <pre>{
+  "ok": false,
+  "message": "Documento inválido.",
+  "errors": [
+    "fileName es requerido cuando no puede inferirse desde S3.",
+    "Debe enviarse document.source, content_base64 o una referencia S3."
+  ]
+}</pre>
+
+  <h3>Documento inválido o ilegible</h3>
+  <pre>422 Unprocessable Entity</pre>
+  <pre>{
+  "ok": false,
+  "message": "Documento inválido o ilegible. Por favor carga un certificado de origen o carnet de circulación válido y legible.",
+  "document": {
+    "valid": false,
+    "type": "unknown",
+    "label": "Documento no reconocido",
+    "confidence": 35,
+    "missingFields": [],
+    "messages": []
+  }
+}</pre>
+
+  <h2>Ejemplo Curl</h2>
+  <pre>curl --location 'https://7tve2roaxc.execute-api.us-east-1.amazonaws.com/danaconnect/vehicle-document' \
+  --header 'Content-Type: application/json' \
+  --header 'x-api-key: API_KEY_ENTREGADA_POR_DANACONNECT' \
+  --data '{
+    "action": "extract_vehicle_document",
+    "document": {
+      "fileName": "carnet.pdf",
+      "contentType": "application/pdf",
+      "source": "s3://WS/2026/7/documento.pdf"
+    }
+  }'</pre>
+</body>
+</html>
