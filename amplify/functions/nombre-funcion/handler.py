@@ -1,6 +1,4 @@
 import base64
-from email.parser import BytesParser
-from email.policy import default as email_policy
 import json
 import logging
 import os
@@ -27,14 +25,16 @@ DANA_CLIENT_ID = os.environ.get("DANA_CLIENT_ID", "")
 DANA_CLIENT_SECRET = os.environ.get("DANA_CLIENT_SECRET", "")
 DANA_OAUTH_SCOPE = os.environ.get("DANA_OAUTH_SCOPE", "")
 DANA_OAUTH_AUTH_METHOD = os.environ.get("DANA_OAUTH_AUTH_METHOD", "basic").lower()
-DANA_USERNAME = os.environ.get("DANA_USERNAME", "")
-DANA_PASSWORD = os.environ.get("DANA_PASSWORD", "")
-DANA_FILE_UPLOAD_PATH = os.environ.get("DANA_FILE_UPLOAD_PATH", "/dana/conversation/http/rest/file/upload")
 DANA_TOKEN_AUDIT_PROJECT_ID = os.environ.get("DANA_TOKEN_AUDIT_PROJECT_ID", "")
 DANA_TIMEOUT_SECONDS = int(os.environ.get("DANA_TIMEOUT_SECONDS", "20"))
 DANA_CONVERSATION_DEBUG = os.environ.get("DANA_CONVERSATION_DEBUG", "0")
 LAMBDA_NAME = os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "Portal_auto")
 DOCUMENTS_S3_BUCKET = os.environ.get("DOCUMENTS_S3_BUCKET", "mercantilseguros-dana")
+DANA_S3_SECRET_ID = os.environ.get("DANA_S3_SECRET_ID", "")
+PARAMETERS_SECRETS_EXTENSION_URL = os.environ.get(
+    "PARAMETERS_SECRETS_EXTENSION_URL",
+    "http://localhost:2773",
+).rstrip("/")
 
 bedrock = boto3.client(
     "bedrock-runtime",
@@ -68,6 +68,7 @@ DOCUMENT_TYPE_LABELS = {
 SUPPORTED_ACTIONS = {"extract_vehicle_document"}
 
 TOKEN_CACHE = {"access_token": "", "expires_at": 0}
+SECRET_CACHE: Dict[str, Any] = {"secret_id": "", "value": None, "expires_at": 0}
 
 TOKEN_AUDIT_FIELD_MAP = {
     "lambdaName": "LAMBDA_NAME",
@@ -84,10 +85,6 @@ class BedrockExtractionError(Exception):
     def __init__(self, message: str, token_usage: Dict[str, int]):
         super().__init__(message)
         self.token_usage = token_usage
-
-
-class MultipartRequestError(Exception):
-    pass
 
 
 def response(status_code: int, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -159,18 +156,6 @@ def start_conversation_project_url(project_id: str) -> str:
     return f"{DANA_BASE_URL}/api/2.0/rest/conversation/ProjectID/{encoded_project_id}/start/data"
 
 
-def dana_file_upload_url() -> str:
-    return f"{DANA_BASE_URL}{DANA_FILE_UPLOAD_PATH}"
-
-
-def dana_basic_headers() -> Dict[str, str]:
-    credentials = f"{DANA_USERNAME}:{DANA_PASSWORD}".encode("utf-8")
-    return {
-        "Authorization": f"Basic {base64.b64encode(credentials).decode('utf-8')}",
-        "Accept": "application/json",
-    }
-
-
 def parse_bedrock_token_usage(result: Dict[str, Any]) -> Dict[str, int]:
     usage = result.get("usage") or {}
     input_tokens = int(usage.get("inputTokens") or usage.get("input_tokens") or 0)
@@ -240,73 +225,6 @@ def record_bedrock_token_usage(
         logger.warning("token_audit_start_conversation_failed error=%s", exc)
 
 
-def request_header(event: Dict[str, Any], name: str) -> str:
-    headers = event.get("headers") or {}
-    target = name.lower()
-    for key, value in headers.items():
-        if str(key).lower() == target:
-            return str(value or "")
-    return ""
-
-
-def parse_multipart_body(event: Dict[str, Any]) -> Dict[str, Any]:
-    content_type = request_header(event, "content-type")
-    if "multipart/form-data" not in content_type.lower():
-        raise MultipartRequestError("Content-Type debe ser multipart/form-data.")
-
-    raw_body = event.get("body")
-    if not raw_body:
-        raise MultipartRequestError("Body multipart vacío.")
-
-    if not event.get("isBase64Encoded"):
-        raise MultipartRequestError(
-            "API Gateway debe entregar multipart/form-data como base64. "
-            "Configura Binary Media Types para multipart/form-data y despliega el stage."
-        )
-    body_bytes = base64.b64decode(raw_body)
-
-    message_bytes = (
-        f"Content-Type: {content_type}\r\n"
-        "MIME-Version: 1.0\r\n\r\n"
-    ).encode("utf-8") + body_bytes
-    message = BytesParser(policy=email_policy).parsebytes(message_bytes)
-    if not message.is_multipart():
-        raise MultipartRequestError("Body multipart inválido.")
-
-    fields: Dict[str, str] = {}
-    document: Optional[Dict[str, Any]] = None
-    for part in message.iter_parts():
-        if part.get_content_disposition() != "form-data":
-            continue
-        name = part.get_param("name", header="content-disposition")
-        filename = part.get_filename()
-        payload = part.get_payload(decode=True) or b""
-
-        if filename or name == "file":
-            document = {
-                "fileName": filename or "documento",
-                "contentType": part.get_content_type(),
-                "_file_bytes": payload,
-            }
-            continue
-
-        if name:
-            charset = part.get_content_charset() or "utf-8"
-            fields[str(name)] = payload.decode(charset, errors="replace")
-
-    if not document:
-        raise MultipartRequestError("Debe enviarse el archivo en el campo file.")
-    if not document.get("_file_bytes"):
-        raise MultipartRequestError("El archivo recibido está vacío.")
-
-    return {
-        "action": fields.get("action") or "extract_vehicle_document",
-        "document": document,
-        "fields": fields,
-        "uploadToDana": parse_bool(fields.get("uploadToDana") or fields.get("upload_to_dana")),
-    }
-
-
 def parse_json_body(event: Dict[str, Any]) -> Dict[str, Any]:
     raw_body = event.get("body") or "{}"
     if event.get("isBase64Encoded"):
@@ -315,9 +233,6 @@ def parse_json_body(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
-    content_type = request_header(event, "content-type").lower()
-    if "multipart/form-data" in content_type:
-        return parse_multipart_body(event)
     return parse_json_body(event)
 
 
@@ -330,10 +245,6 @@ def normalize_text(value: Any) -> Optional[str]:
         return None
     text = re.sub(r"\s+", " ", str(value)).strip()
     return text or None
-
-
-def parse_bool(value: Any) -> bool:
-    return str(value or "").strip().strip("\"'").lower() in {"true", "1", "si", "sí", "yes", "y"}
 
 
 def normalize_upper(value: Any) -> Optional[str]:
@@ -395,14 +306,8 @@ def is_s3_uri(value: str) -> bool:
     return value.lower().startswith("s3://")
 
 
-def is_https_s3_url(value: str) -> bool:
-    if not value.lower().startswith("https://"):
-        return False
-    try:
-        parse_s3_url(value)
-        return True
-    except ValueError:
-        return False
+def is_http_url(value: str) -> bool:
+    return value.lower().startswith(("http://", "https://"))
 
 
 def extension_of(filename: str) -> str:
@@ -454,26 +359,21 @@ def validate_document(document: Dict[str, Any]) -> List[str]:
         errors.append("fileName es requerido cuando no puede inferirse desde S3.")
 
     source = document_source_of(document)
-    has_uploaded_file = bool(document.get("_file_bytes"))
-    has_base64 = bool(document.get("content_base64") or (source and not is_s3_uri(source) and not is_https_s3_url(source)))
+    has_base64 = bool(document.get("content_base64") or (source and not is_s3_uri(source) and not is_http_url(source)))
     has_s3_reference = bool(
         is_s3_uri(source)
-        or is_https_s3_url(source)
         or document.get("s3_bucket")
         or document.get("s3Bucket")
         or document.get("s3_uri")
         or document.get("s3Uri")
-        or document.get("s3_url")
-        or document.get("s3Url")
     )
-    if not has_uploaded_file and not has_base64 and not has_s3_reference:
-        errors.append("Debe enviarse document.source, content_base64, una referencia S3 o multipart/form-data campo file.")
+    if is_http_url(source) or document.get("s3_url") or document.get("s3Url"):
+        errors.append("No se aceptan links públicos ni URLs HTTPS. Envíe ruta S3 o base64.")
+    if not has_base64 and not has_s3_reference:
+        errors.append("Debe enviarse content_base64, document.source base64, s3_uri o s3_bucket + s3_key.")
     if has_s3_reference:
         try:
-            if s3_url_of(document):
-                parse_s3_url(s3_url_of(document) or "")
-            else:
-                s3_location_of(document)
+            s3_location_of(document)
         except ValueError as exc:
             errors.append(str(exc))
 
@@ -502,30 +402,6 @@ def is_valid_s3_bucket_name(value: str) -> bool:
     return bool(re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", value or ""))
 
 
-def parse_s3_url(value: str) -> tuple[str, str]:
-    parsed = urllib.parse.urlparse(value)
-    host = parsed.netloc.lower()
-    path_parts = [part for part in parsed.path.split("/") if part]
-
-    if parsed.scheme != "https" or not host:
-        raise ValueError("s3_url debe ser una URL HTTPS de S3.")
-
-    if ".s3." in host or host.endswith(".s3.amazonaws.com"):
-        bucket = host.split(".s3", 1)[0]
-        key = "/".join(path_parts)
-    elif host.startswith("s3.") or host == "s3.amazonaws.com":
-        if len(path_parts) < 2:
-            raise ValueError("s3_url debe incluir bucket y key del objeto.")
-        bucket = path_parts[0]
-        key = "/".join(path_parts[1:])
-    else:
-        raise ValueError("s3_url debe apuntar a un host de Amazon S3.")
-
-    if not bucket or not key:
-        raise ValueError("s3_url debe incluir bucket y key del objeto.")
-    return bucket, urllib.parse.unquote(key)
-
-
 def s3_location_of(document: Dict[str, Any]) -> tuple[str, str]:
     bucket = document.get("s3_bucket") or document.get("s3Bucket")
     key = document.get("s3_key") or document.get("s3Key")
@@ -543,52 +419,162 @@ def s3_location_of(document: Dict[str, Any]) -> tuple[str, str]:
     if s3_uri:
         return parse_s3_uri(str(s3_uri))
 
-    s3_url = document.get("s3_url") or document.get("s3Url")
-    if s3_url:
-        return parse_s3_url(str(s3_url))
-
-    raise ValueError("Referencia S3 inválida. Use s3_uri, s3_url o s3_bucket + s3_key.")
+    raise ValueError("Referencia S3 inválida. Use s3_uri o s3_bucket + s3_key.")
 
 
-def s3_url_of(document: Dict[str, Any]) -> Optional[str]:
-    source = document_source_of(document)
-    if source and is_https_s3_url(source):
-        return source
+def read_secret_from_extension(secret_id: str) -> Dict[str, Any]:
+    now = int(time.time())
+    if (
+        SECRET_CACHE["secret_id"] == secret_id
+        and SECRET_CACHE["value"]
+        and int(SECRET_CACHE["expires_at"]) > now + 60
+    ):
+        return SECRET_CACHE["value"]
 
-    value = document.get("s3_url") or document.get("s3Url")
-    return str(value) if value else None
+    session_token = os.environ.get("AWS_SESSION_TOKEN", "")
+    if not session_token:
+        raise ValueError("AWS_SESSION_TOKEN no está disponible para consultar Secrets Manager Extension.")
+
+    encoded_secret_id = urllib.parse.quote(secret_id, safe="")
+    request = urllib.request.Request(
+        f"{PARAMETERS_SECRETS_EXTENSION_URL}/secretsmanager/get?secretId={encoded_secret_id}",
+        method="GET",
+        headers={"X-Aws-Parameters-Secrets-Token": session_token},
+    )
+    with urllib.request.urlopen(request, timeout=10) as result:
+        raw = result.read().decode("utf-8")
+        payload = json.loads(raw)
+
+    secret_string = payload.get("SecretString")
+    if not secret_string:
+        raise ValueError("El secret S3 no contiene SecretString.")
+
+    secret_value = json.loads(secret_string)
+    if not isinstance(secret_value, dict):
+        raise ValueError("El secret S3 debe ser un objeto JSON.")
+
+    SECRET_CACHE["secret_id"] = secret_id
+    SECRET_CACHE["value"] = secret_value
+    SECRET_CACHE["expires_at"] = now + 300
+    return secret_value
 
 
-def read_s3_url_bytes(value: str) -> bytes:
-    parse_s3_url(value)
-    with urllib.request.urlopen(value, timeout=60) as result:
-        return result.read()
+def secret_field(secret: Dict[str, Any], *names: str) -> Optional[str]:
+    normalized_secret = {
+        re.sub(r"[^a-z0-9]", "", str(key).lower()): value
+        for key, value in secret.items()
+    }
+    for name in names:
+        value = secret.get(name)
+        if value is None:
+            value = secret.get(name.lower())
+        if value is None:
+            value = secret.get(name.upper())
+        if value is None:
+            value = normalized_secret.get(re.sub(r"[^a-z0-9]", "", name.lower()))
+        if value:
+            return str(value)
+    return None
+
+
+def normalize_aws_region(value: Optional[str]) -> str:
+    region = (value or AWS_REGION).strip()
+    if region == "us-east-01":
+        return "us-east-1"
+    return region
+
+
+def s3_client_from_secret(secret: Dict[str, Any]):
+    access_key = secret_field(
+        secret,
+        "aws_access_key_id",
+        "accessKeyId",
+        "AccessKeyId",
+        "access_key_id",
+        "accessKey",
+        "AccessKey",
+        "access_key",
+        "Access key ID",
+        "Access Key ID",
+        "AWS_ACCESS_KEY_ID",
+    )
+    secret_key = secret_field(
+        secret,
+        "aws_secret_access_key",
+        "secretAccessKey",
+        "SecretAccessKey",
+        "secret_access_key",
+        "secretKey",
+        "SecretKey",
+        "Secret access key",
+        "Secret Access Key",
+        "AWS_SECRET_ACCESS_KEY",
+    )
+    session_token = secret_field(secret, "aws_session_token", "sessionToken", "SessionToken", "AWS_SESSION_TOKEN")
+    region = normalize_aws_region(secret_field(secret, "region", "Region", "aws_region", "AWS_REGION"))
+
+    if not access_key or not secret_key:
+        visible_keys = ", ".join(sorted(str(key) for key in secret.keys()))
+        raise ValueError(
+            "El secret S3 debe contener access key y secret key. "
+            f"Keys disponibles en el secret: {visible_keys}"
+        )
+
+    kwargs = {
+        "region_name": region,
+        "aws_access_key_id": access_key,
+        "aws_secret_access_key": secret_key,
+        "config": Config(read_timeout=60, connect_timeout=10, retries={"max_attempts": 2}),
+    }
+    if session_token:
+        kwargs["aws_session_token"] = session_token
+    return boto3.client("s3", **kwargs)
+
+
+def validate_secret_s3_scope(secret: Dict[str, Any], bucket: str, key: str) -> None:
+    allowed_bucket = secret_field(secret, "bucket", "s3_bucket", "S3_BUCKET")
+    allowed_prefix = secret_field(secret, "prefix", "s3_prefix", "S3_PREFIX")
+
+    if allowed_bucket and bucket != allowed_bucket:
+        raise ValueError("La ruta S3 no pertenece al bucket autorizado para este secret.")
+    if allowed_prefix and not key.startswith(allowed_prefix.lstrip("/")):
+        raise ValueError("La ruta S3 no pertenece al prefijo autorizado para este secret.")
+
+
+def read_s3_object_bytes(bucket: str, key: str) -> bytes:
+    client = s3
+    if DANA_S3_SECRET_ID:
+        secret = read_secret_from_extension(DANA_S3_SECRET_ID)
+        validate_secret_s3_scope(secret, bucket, key)
+        client = s3_client_from_secret(secret)
+        logger.info("s3_read_using_secret secret_id=%s bucket=%s key_preview=%s", DANA_S3_SECRET_ID, bucket, key[:40])
+    else:
+        logger.info("s3_read_using_lambda_role bucket=%s key_preview=%s", bucket, key[:40])
+
+    try:
+        result = client.get_object(Bucket=bucket, Key=key)
+        return result["Body"].read()
+    except ClientError as exc:
+        error = exc.response.get("Error", {})
+        code = error.get("Code", "Unknown")
+        message = error.get("Message", "Sin detalle")
+        logger.warning("s3_read_failed bucket=%s key=%s code=%s message=%s", bucket, key, code, message)
+        raise ValueError(f"No se pudo leer el documento desde S3. Código: {code}. Detalle: {message}") from exc
+    except BotoCoreError as exc:
+        logger.warning("s3_read_failed bucket=%s key=%s error=%s", bucket, key, exc)
+        raise ValueError(f"No se pudo leer el documento desde S3. Detalle: {exc}") from exc
 
 
 def read_document_bytes(document: Dict[str, Any]) -> bytes:
-    if document.get("_file_bytes"):
-        return document["_file_bytes"]
-
     source = document_source_of(document)
-    if source and not is_s3_uri(source) and not is_https_s3_url(source):
+    if source and not is_s3_uri(source):
         return decode_base64_value(source)
 
     if document.get("content_base64"):
         return decode_base64_document(document)
 
-    s3_url = s3_url_of(document)
-    if s3_url:
-        try:
-            return read_s3_url_bytes(s3_url)
-        except Exception as exc:
-            logger.info("No se pudo leer s3_url directamente; se intentará con IAM. error=%s", exc)
-
     bucket, key = s3_location_of(document)
-    try:
-        result = s3.get_object(Bucket=bucket, Key=key)
-        return result["Body"].read()
-    except (ClientError, BotoCoreError) as exc:
-        raise ValueError("No se pudo leer el documento desde S3.") from exc
+    return read_s3_object_bytes(bucket, key)
 
 
 def decode_base64_document(document: Dict[str, Any]) -> bytes:
@@ -600,64 +586,6 @@ def decode_base64_value(value: str) -> bytes:
         return base64.b64decode(value)
     except Exception as exc:
         raise ValueError("document.source/base64 inválido.") from exc
-
-
-def build_multipart_body(field_name: str, file_name: str, content_type: str, file_bytes: bytes) -> tuple[str, bytes]:
-    boundary = f"----portalauto{int(time.time() * 1000)}"
-    header = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="{field_name}"; filename="{file_name}"\r\n'
-        f"Content-Type: {content_type}\r\n\r\n"
-    ).encode("utf-8")
-    footer = f"\r\n--{boundary}--\r\n".encode("utf-8")
-    return boundary, header + file_bytes + footer
-
-
-def upload_file_to_dana(document: Dict[str, Any], file_bytes: bytes) -> Dict[str, Any]:
-    if not DANA_USERNAME or not DANA_PASSWORD:
-        raise ValueError("DANA_USERNAME y DANA_PASSWORD son requeridos para File Upload.")
-
-    content_type = content_type_of(document) or "application/octet-stream"
-    boundary, multipart_body = build_multipart_body(
-        "file",
-        filename_of(document),
-        content_type,
-        file_bytes,
-    )
-    request = urllib.request.Request(
-        dana_file_upload_url(),
-        data=multipart_body,
-        method="POST",
-        headers={
-            **dana_basic_headers(),
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "X-DEBUG": DANA_CONVERSATION_DEBUG,
-        },
-    )
-    with urllib.request.urlopen(request, timeout=DANA_TIMEOUT_SECONDS) as result:
-        raw = result.read().decode("utf-8", errors="replace")
-        if not raw:
-            return {}
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {"raw": raw}
-
-
-def build_public_upload_response(upload_result: Dict[str, Any]) -> Dict[str, Any]:
-    file_id = (
-        upload_result.get("fileID")
-        or upload_result.get("fileId")
-        or upload_result.get("id")
-        or upload_result.get("path")
-        or upload_result.get("url")
-    )
-    return {
-        "uploaded": bool(file_id or upload_result),
-        "fileID": file_id,
-        "reference": file_id,
-        "raw": upload_result,
-    }
 
 
 def detect_document_type_from_text(text: str) -> str:
@@ -784,10 +712,6 @@ def build_public_extraction_response(document: Dict[str, Any], extraction: Dict[
         },
         "vehicle": public_vehicle_payload(extraction.get("vehicle") or {}),
     }
-
-
-def should_upload_to_dana(body: Dict[str, Any]) -> bool:
-    return parse_bool(body.get("uploadToDana") or body.get("upload_to_dana"))
 
 
 def invalid_document_body(extraction: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1095,22 +1019,6 @@ def handle_extract_vehicle_document(body: Dict[str, Any]) -> Dict[str, Any]:
             return invalid_document_response(extraction)
         record_bedrock_token_usage(body, document, extraction, token_usage, "VALID_DOCUMENT")
         response_body = build_public_extraction_response(document, extraction)
-        if should_upload_to_dana(body):
-            try:
-                upload_result = upload_file_to_dana(document, file_bytes)
-                response_body["danaUpload"] = build_public_upload_response(upload_result)
-            except Exception as upload_error:
-                logger.exception("Documento válido, pero falló el Upload API de DANA")
-                return response(
-                    502,
-                    {
-                        "ok": False,
-                        "message": "El documento fue validado, pero no se pudo subir a DANA.",
-                        "error": str(upload_error),
-                        "document": response_body.get("document"),
-                        "vehicle": response_body.get("vehicle"),
-                    },
-                )
         return response(200, response_body)
     except Exception as exc:
         logger.exception("No se pudo extraer con Bedrock")
@@ -1158,8 +1066,6 @@ def lambda_handler(event, context):
             )
 
         return handle_extract_vehicle_document(body)
-    except MultipartRequestError as exc:
-        return response(400, {"ok": False, "message": "Body multipart inválido.", "errors": [str(exc)]})
     except json.JSONDecodeError:
         return response(400, {"ok": False, "message": "Body JSON inválido."})
     except Exception as exc:
