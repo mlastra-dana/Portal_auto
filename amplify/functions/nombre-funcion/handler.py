@@ -18,6 +18,7 @@ logger.setLevel(logging.INFO)
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "")
 BEDROCK_MAX_TOKENS = int(os.environ.get("BEDROCK_MAX_TOKENS", "1200"))
+BEDROCK_MIN_CONFIDENCE = float(os.environ.get("BEDROCK_MIN_CONFIDENCE", "0.75"))
 DANA_BASE_URL = os.environ.get("DANA_BASE_URL", "https://appserv.danaconnect.com").rstrip("/")
 DANA_TOKEN_URL = os.environ.get("DANA_TOKEN_URL", "https://auth.danaconnect.com/oauth2/token")
 DANA_ACCESS_TOKEN = os.environ.get("DANA_ACCESS_TOKEN", "")
@@ -64,6 +65,30 @@ DOCUMENT_TYPE_LABELS = {
     "circulation_card": "Carnet de circulación",
     "unknown": "Documento no reconocido",
 }
+
+LOW_QUALITY_TERMS = (
+    "ilegible",
+    "no legible",
+    "poca legibilidad",
+    "baja calidad",
+    "borroso",
+    "borrosa",
+    "desenfocado",
+    "desenfocada",
+    "recortado",
+    "recortada",
+    "cortado",
+    "cortada",
+    "reflejo",
+    "sombra",
+    "oscuro",
+    "oscura",
+    "sobreexpuesto",
+    "subexpuesto",
+    "no se puede leer",
+    "no puede leerse",
+    "resolución insuficiente",
+)
 
 SUPPORTED_ACTIONS = {"extract_vehicle_document"}
 
@@ -674,6 +699,21 @@ def confidence_as_percentage(value: Any) -> Optional[float]:
     return round(float(value) * 100, 2) if value <= 1 else round(float(value), 2)
 
 
+def confidence_as_score(value: Any) -> float:
+    if not isinstance(value, (int, float)):
+        return 0.0
+    number = float(value)
+    return number / 100 if number > 1 else number
+
+
+def has_low_quality_message(extraction: Dict[str, Any]) -> bool:
+    messages = extraction.get("messages")
+    if not isinstance(messages, list):
+        return False
+    normalized = " ".join(str(message).lower() for message in messages)
+    return any(term in normalized for term in LOW_QUALITY_TERMS)
+
+
 def public_vehicle_payload(vehicle: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "documentType": vehicle.get("documentType"),
@@ -748,7 +788,10 @@ def is_invalid_or_illegible(extraction: Dict[str, Any]) -> bool:
     if document_type == "circulation_card" and not vehicle.get("plate"):
         return True
 
-    if isinstance(confidence, (int, float)) and confidence < 0.5:
+    if confidence_as_score(confidence) < BEDROCK_MIN_CONFIDENCE:
+        return True
+
+    if has_low_quality_message(extraction):
         return True
 
     return False
@@ -795,6 +838,9 @@ No completes campos por conocimiento general, patrones, marcas conocidas, nombre
 Solo extrae valores que estén visibles en el documento adjunto o en el texto OCR de apoyo.
 Si un valor está parcialmente visible, borroso, ambiguo o no puedes distinguirlo con seguridad, usa null y agrega el campo a missing_fields.
 No corrijas ni normalices un valor si eso requiere adivinar caracteres; conserva únicamente lo legible.
+Evalúa primero la legibilidad general del documento. Si la imagen/PDF está borroso, recortado, oscuro, sobreexpuesto, con reflejos, con sombras fuertes, con resolución insuficiente, rotado de forma que impide leer, o no permite leer con seguridad los campos críticos, marca document_valid=false.
+No aceptes documentos de baja legibilidad aunque parezcan ser de tipo vehicular.
+Usa confidence de 0 a 100. Para documentos válidos y legibles, confidence debe ser al menos 75. Si la legibilidad es baja, usa confidence menor a 75.
 
 Esquema exacto:
 {{
@@ -822,12 +868,20 @@ Esquema exacto:
 }}
 
 Reglas de identificación:
-- Solo son documentos válidos: certificado/título de origen/registro vehicular y carnet/certificado de circulación.
+- Solo son documentos válidos y legibles: certificado/título de origen/registro vehicular y carnet/certificado de circulación.
 - document_type = "certificate_of_origin" si el documento principal tiene encabezados como "Certificado de Origen", "Certificado de Registro de Vehículo", "Título", "Título de Propiedad" o "Propiedad del Vehículo".
 - document_type = "circulation_card" si el documento principal tiene encabezado "Certificado de Circulación", "Carnet de Circulación" o formato de carnet INTT.
 - Si un PDF contiene varias páginas o secciones, clasifica según el documento principal o encabezado dominante. No clasifiques como "circulation_card" solo porque aparezca una mención secundaria a circulación dentro de un certificado/título.
 - En certificado de origen/título puede no existir placa; eso no invalida el documento.
 - En carnet de circulación, placa y vin/serial de carrocería son campos críticos.
+- Si el documento es una cédula de identidad, licencia, recibo, captura de pantalla, documento personal o cualquier documento distinto a los vehiculares aceptados, document_valid=false, document_type="unknown" y explica el motivo en messages.
+
+Reglas de legibilidad y rechazo:
+- Si no puedes leer claramente marca, modelo, año y vin/serial de carrocería, document_valid=false.
+- Si el documento es carnet/certificado de circulación y no puedes leer claramente placa y vin/serial de carrocería, document_valid=false.
+- Si el documento está parcialmente tapado, recortado o con bordes/campos críticos fuera de la imagen, document_valid=false.
+- Si solo puedes reconocer el tipo de documento, pero no los datos críticos del vehículo, document_valid=false.
+- Cuando rechaces por calidad, agrega en messages una razón breve como "Documento ilegible o de baja calidad", "Campos críticos borrosos" o "Documento recortado".
 
 Reglas de extracción:
 - ownerId: cédula/RIF del titular si aparece. Ejemplo del carnet: V24657722.
@@ -861,6 +915,7 @@ Control anti-alucinación:
 - Nunca derives marca, modelo, año, color, placa, VIN, serial de motor, peso, ejes o puestos si no se ven en el documento.
 - Nunca uses ejemplos de este prompt como datos reales.
 - Nunca asumas que un vehículo tiene 5 puestos, 2 ejes o uso PARTICULAR si no aparece.
+- Nunca uses el nombre del archivo, la ruta S3 o el contentType para inferir el tipo documental ni los datos del vehículo.
 - Si hay conflicto entre el OCR auxiliar y la imagen/documento adjunto, prioriza lo visible en el documento adjunto.
 
 Texto OCR de apoyo, si existe:

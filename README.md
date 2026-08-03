@@ -71,30 +71,17 @@ esperado por el frontend demo:
 
 ### Contrato de entrada
 
-El endpoint soporta dos formas de consumo:
+El endpoint productivo soporta consumo backend-to-backend por JSON:
 
-- **Validacion + Upload DANA:** el consumidor envia el archivo como `multipart/form-data`, campo `file`, y `uploadToDana=true`. La Lambda valida con IA y solo si el documento es valido ejecuta el API Upload de DANA.
-- **Solo validacion/extraccion:** se mantiene el contrato actual por JSON con `document.source` en Base64 o referencia S3.
-
-Multipart recomendado cuando el consumidor quiere que este servicio haga el Upload
-API de DANA:
-
-```http
-Content-Type: multipart/form-data
-
-file: carnet.pdf
-uploadToDana: true
-```
-
-Para recibir archivos por API Gateway REST API, el stage debe tener configurado
-`multipart/form-data` como Binary Media Type. Sin eso, API Gateway entrega el
-archivo como texto y los bytes llegan corruptos a Textract/Bedrock.
+- **Referencia S3:** el consumidor envia la ruta S3 del documento ya cargado.
+- **Base64:** el consumidor envia el contenido del archivo codificado en Base64.
 
 JSON/Base64:
 
 
 ```json
 {
+  "action": "extract_vehicle_document",
   "document": {
     "fileName": "carnet.pdf",
     "contentType": "application/pdf",
@@ -107,23 +94,24 @@ JSON/S3:
 
 ```json
 {
+  "action": "extract_vehicle_document",
   "document": {
     "fileName": "carnet.pdf",
     "contentType": "application/pdf",
-    "source": "s3://mercantilseguros-dana/WS/2026/7/documento.pdf"
+    "source": "s3://WS/2026/7/documento.pdf"
   }
 }
 ```
 
-El bucket confirmado para este flujo es `mercantilseguros-dana`; los documentos
-deben estar bajo el prefijo `WS/`.
+El bucket confirmado para este flujo es `mercantilseguros-dana`; desde el
+contrato del cliente basta con enviar la ruta del archivo. El acceso al bucket,
+las credenciales y Secrets Manager son detalles internos de la Lambda.
 
 Se mantiene compatibilidad interna con `content_base64`, `s3_uri`,
-`s3_bucket` + `s3_key` y `s3_url`.
+`s3_bucket` + `s3_key`.
 
-Para S3, el rol IAM de la Lambda debe tener permiso `s3:GetObject` sobre el
-bucket/ruta recibida. Si el bucket esta en otra cuenta, tambien se requiere
-politica del bucket permitiendo lectura al rol de la Lambda.
+La API no recibe `multipart/form-data` en esta version y no ejecuta API Upload
+de DANA. El servicio solo valida el documento y devuelve la extraccion.
 
 Formatos soportados:
 
@@ -142,12 +130,34 @@ La respuesta exitosa devuelve:
 
 - `document`: validez, tipo detectado y metadatos minimos del documento.
 - `vehicle`: datos extraidos del vehiculo.
-- `danaUpload`: solo cuando `uploadToDana=true`; incluye la referencia devuelta por DANA.
 
 El response no devuelve la extraccion OCR/IA completa para mantener el contrato
 compacto para el cliente.
 Los datos del vehiculo deben provenir del documento. Si un campo no aparece con
 claridad, se devuelve `null`; no se completan valores por inferencia.
+
+Los documentos de baja calidad, borrosos, recortados, con reflejos o con campos
+criticos no legibles se rechazan como `422 Unprocessable Entity`.
+
+### Operacion interna
+
+La lectura de documentos desde S3 se realiza con credenciales almacenadas en AWS
+Secrets Manager y obtenidas mediante la capa `AWS-Parameters-and-Secrets-Lambda-Extension`.
+Esto es transparente para el cliente.
+
+Variables relevantes para operacion:
+
+| Variable | Uso |
+| --- | --- |
+| `BEDROCK_MODEL_ID` | Modelo Bedrock usado para analizar el documento. |
+| `BEDROCK_MAX_TOKENS` | Limite maximo de tokens de salida de Bedrock. |
+| `BEDROCK_MIN_CONFIDENCE` | Umbral minimo de confianza para aceptar un documento. Por defecto `0.75`. |
+| `DANA_S3_SECRET_ID` | Secret con credenciales de lectura S3. |
+| `DANA_TOKEN_AUDIT_PROJECT_ID` | Proyecto DANA donde se registran tokens de consumo IA. |
+
+El secret S3 debe contener `Access key ID`, `Secret access key` y `Region`. La
+Lambda normaliza `us-east-01` a `us-east-1`, pero el valor correcto esperado es
+`us-east-1`.
 
 ### Notas operativas
 

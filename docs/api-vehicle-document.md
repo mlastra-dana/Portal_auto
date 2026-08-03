@@ -18,15 +18,6 @@ x-api-key: API_KEY_ENTREGADA_POR_DANACONNECT
 
 ## Headers
 
-Para enviar archivo directo y pedir Upload DANA posterior a la validación:
-
-```http
-Content-Type: multipart/form-data
-x-api-key: API_KEY_ENTREGADA_POR_DANACONNECT
-```
-
-Para solo validar/extractar usando JSON:
-
 ```http
 Content-Type: application/json
 x-api-key: API_KEY_ENTREGADA_POR_DANACONNECT
@@ -34,31 +25,14 @@ x-api-key: API_KEY_ENTREGADA_POR_DANACONNECT
 
 ## Request
 
-El endpoint puede usarse para solo validar/extractar o para validar y luego subir
-el documento a DANA.
+El endpoint valida y extrae información desde documentos enviados por JSON.
+No recibe `multipart/form-data` y no ejecuta API Upload de DANA en esta versión.
 
-### Opción A: archivo directo + Upload DANA
-
-El consumidor envía el archivo como `multipart/form-data`. El archivo debe viajar
-en el campo `file`. Para que la Lambda ejecute el API Upload de DANA después de
-una validación exitosa, enviar `uploadToDana=true`.
-
-```text
-file: carnet.pdf
-uploadToDana: true
-```
-
-Si el documento no es válido, no se ejecuta el Upload API de DANA.
-
-Requisito de infraestructura: API Gateway REST API debe tener
-`multipart/form-data` configurado como Binary Media Type y el stage debe estar
-desplegado después del cambio. Si no, el archivo llega al Lambda como texto y no
-como bytes válidos.
-
-### Opción B: solo validación con Base64
+### Opción A: documento en Base64
 
 ```json
 {
+  "action": "extract_vehicle_document",
   "document": {
     "fileName": "carnet.pdf",
     "contentType": "application/pdf",
@@ -67,27 +41,30 @@ como bytes válidos.
 }
 ```
 
-### Opción C: solo validación con referencia S3
+### Opción B: documento por referencia S3
 
 ```json
 {
+  "action": "extract_vehicle_document",
   "document": {
     "fileName": "carnet.pdf",
     "contentType": "application/pdf",
-    "source": "s3://mercantilseguros-dana/WS/2026/7/documento.pdf"
+    "source": "s3://WS/2026/7/documento.pdf"
   }
 }
 ```
 
 Nota operativa: el bucket confirmado para este flujo es
 `mercantilseguros-dana` y la ruta del documento debe ubicarse bajo el prefijo
-`WS/`.
+`WS/`. También se acepta la forma completa
+`s3://mercantilseguros-dana/WS/2026/7/documento.pdf`.
 
 También se mantiene compatibilidad con `content_base64`, `s3_uri`,
-`s3_bucket` + `s3_key` y `s3_url`.
+`s3_bucket` + `s3_key`.
 
-Si se usa una referencia S3, la Lambda debe tener permiso de lectura sobre el
-objeto enviado.
+Si se usa una referencia S3, el cliente solo debe enviar la ruta del documento.
+La lectura del objeto, credenciales y permisos son gestionados internamente por
+el servicio.
 
 Formatos soportados:
 
@@ -104,6 +81,10 @@ Formatos soportados:
 | Carnet / certificado de circulación | `circulation_card` |
 | Título / certificado de origen / certificado de registro vehicular | `certificate_of_origin` |
 
+El documento debe ser legible. Se rechazan imágenes o PDFs borrosos,
+recortados, oscuros, con reflejos, con baja resolución o con campos críticos no
+legibles.
+
 ## Response Exitoso
 
 ```http
@@ -113,8 +94,6 @@ Formatos soportados:
 La API solo devuelve datos extraídos del documento. Si un dato no aparece con
 claridad, el campo se devuelve como `null` y puede aparecer en `missingFields`.
 No se completan campos por inferencia, valores esperados o conocimiento externo.
-Cuando se envía `uploadToDana=true` y la validación es exitosa, se incluye
-`danaUpload` con la referencia devuelta por DANA.
 
 ```json
 {
@@ -144,11 +123,6 @@ Cuando se envía `uploadToDana=true` y la validación es exitosa, se incluye
     "weightKg": "400",
     "axles": "2",
     "seats": "5"
-  },
-  "danaUpload": {
-    "uploaded": true,
-    "fileID": "s3://WS/2026/7/documento.pdf",
-    "reference": "s3://WS/2026/7/documento.pdf"
   }
 }
 ```
@@ -209,7 +183,14 @@ Cuando se envía `uploadToDana=true` y la validación es exitosa, se incluye
 
 ```bash
 curl --location 'https://7tve2roaxc.execute-api.us-east-1.amazonaws.com/danaconnect/vehicle-document' \
+  --header 'Content-Type: application/json' \
   --header 'x-api-key: API_KEY_ENTREGADA_POR_DANACONNECT' \
-  --form 'file=@carnet.pdf;type=application/pdf' \
-  --form 'uploadToDana=true'
+  --data '{
+    "action": "extract_vehicle_document",
+    "document": {
+      "fileName": "carnet.pdf",
+      "contentType": "application/pdf",
+      "source": "s3://WS/2026/7/documento.pdf"
+    }
+  }'
 ```
