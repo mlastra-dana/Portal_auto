@@ -99,6 +99,7 @@ x-api-key: API_KEY_ENTREGADA_POR_DANACONNECT</pre>
   <p>El endpoint valida y extrae información desde documentos enviados por JSON. No recibe <code>multipart/form-data</code> y no ejecuta API Upload de DANA en esta versión.</p>
 
   <h3>Opción A: documento en Base64</h3>
+  <p>Cuando el documento viaja en Base64, <code>fileName</code> y <code>contentType</code> son requeridos.</p>
   <pre>{
   "action": "extract_vehicle_document",
   "document": {
@@ -109,11 +110,10 @@ x-api-key: API_KEY_ENTREGADA_POR_DANACONNECT</pre>
 }</pre>
 
   <h3>Opción B: documento por referencia S3</h3>
+  <p>Cuando el documento viaja como referencia S3, basta con enviar <code>source</code>. El servicio infiere <code>fileName</code> y <code>contentType</code> desde la ruta del archivo.</p>
   <pre>{
   "action": "extract_vehicle_document",
   "document": {
-    "fileName": "carnet.pdf",
-    "contentType": "application/pdf",
     "source": "s3://WS/2026/7/documento.pdf"
   }
 }</pre>
@@ -136,6 +136,40 @@ x-api-key: API_KEY_ENTREGADA_POR_DANACONNECT</pre>
       <tr><td>JPG/JPEG</td><td><code>image/jpeg</code></td></tr>
     </tbody>
   </table>
+
+  <p>Regla por origen del documento:</p>
+
+  <table>
+    <thead>
+      <tr><th>Origen</th><th><code>fileName</code></th><th><code>contentType</code></th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Base64</td><td>Requerido</td><td>Requerido</td></tr>
+      <tr><td>S3</td><td>Opcional; se infiere desde la ruta</td><td>Opcional; se infiere desde la extensión</td></tr>
+    </tbody>
+  </table>
+
+  <p>Si se declara <code>contentType</code>, debe corresponder al tipo real del archivo:</p>
+
+  <table>
+    <thead>
+      <tr><th>Extensión del archivo</th><th><code>contentType</code> esperado</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>.pdf</code></td><td><code>application/pdf</code></td></tr>
+      <tr><td><code>.png</code></td><td><code>image/png</code></td></tr>
+      <tr><td><code>.jpg</code></td><td><code>image/jpeg</code></td></tr>
+      <tr><td><code>.jpeg</code></td><td><code>image/jpeg</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Ejemplo para una imagen .jpeg</h3>
+  <pre>{
+  "action": "extract_vehicle_document",
+  "document": {
+    "source": "s3://WS/2026/7/CarnetCirculacionAF696AA.jpeg"
+  }
+}</pre>
 
   <h2>Documentos Aceptados</h2>
   <table>

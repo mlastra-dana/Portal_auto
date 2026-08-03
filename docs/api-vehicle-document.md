@@ -30,6 +30,9 @@ No recibe `multipart/form-data` y no ejecuta API Upload de DANA en esta versión
 
 ### Opción A: documento en Base64
 
+Cuando el documento viaja en Base64, `fileName` y `contentType` son
+requeridos.
+
 ```json
 {
   "action": "extract_vehicle_document",
@@ -43,12 +46,13 @@ No recibe `multipart/form-data` y no ejecuta API Upload de DANA en esta versión
 
 ### Opción B: documento por referencia S3
 
+Cuando el documento viaja como referencia S3, basta con enviar `source`. El
+servicio infiere `fileName` y `contentType` desde la ruta del archivo.
+
 ```json
 {
   "action": "extract_vehicle_document",
   "document": {
-    "fileName": "carnet.pdf",
-    "contentType": "application/pdf",
     "source": "s3://WS/2026/7/documento.pdf"
   }
 }
@@ -73,6 +77,33 @@ Formatos soportados:
 | PDF | `application/pdf` |
 | PNG | `image/png` |
 | JPG/JPEG | `image/jpeg` |
+
+Regla por origen del documento:
+
+| Origen | `fileName` | `contentType` |
+| --- | --- | --- |
+| Base64 | Requerido | Requerido |
+| S3 | Opcional; se infiere desde la ruta | Opcional; se infiere desde la extensión |
+
+Si se declara `contentType`, debe corresponder al tipo real del archivo:
+
+| Extensión del archivo | `contentType` esperado |
+| --- | --- |
+| `.pdf` | `application/pdf` |
+| `.png` | `image/png` |
+| `.jpg` | `image/jpeg` |
+| `.jpeg` | `image/jpeg` |
+
+Ejemplo para una imagen `.jpeg`:
+
+```json
+{
+  "action": "extract_vehicle_document",
+  "document": {
+    "source": "s3://WS/2026/7/CarnetCirculacionAF696AA.jpeg"
+  }
+}
+```
 
 ## Documentos Aceptados
 

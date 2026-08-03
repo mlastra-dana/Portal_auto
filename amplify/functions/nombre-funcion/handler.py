@@ -379,9 +379,9 @@ def bedrock_image_format(document: Dict[str, Any]) -> str:
 
 def validate_document(document: Dict[str, Any]) -> List[str]:
     errors: List[str] = []
+    explicit_filename = document.get("fileName") or document.get("filename")
+    explicit_content_type = document.get("contentType") or document.get("content_type")
     filename = filename_of(document)
-    if not filename:
-        errors.append("fileName es requerido cuando no puede inferirse desde S3.")
 
     source = document_source_of(document)
     has_base64 = bool(document.get("content_base64") or (source and not is_s3_uri(source) and not is_http_url(source)))
@@ -396,11 +396,18 @@ def validate_document(document: Dict[str, Any]) -> List[str]:
         errors.append("No se aceptan links públicos ni URLs HTTPS. Envíe ruta S3 o base64.")
     if not has_base64 and not has_s3_reference:
         errors.append("Debe enviarse content_base64, document.source base64, s3_uri o s3_bucket + s3_key.")
+    if has_base64:
+        if not explicit_filename:
+            errors.append("fileName es requerido cuando el documento se envía en base64.")
+        if not explicit_content_type:
+            errors.append("contentType es requerido cuando el documento se envía en base64.")
     if has_s3_reference:
         try:
             s3_location_of(document)
         except ValueError as exc:
             errors.append(str(exc))
+    if not filename:
+        errors.append("fileName es requerido cuando no puede inferirse desde S3.")
 
     if filename and not is_pdf_document(document) and not is_image_document(document):
         errors.append("El documento debe ser PDF, PNG o JPG.")

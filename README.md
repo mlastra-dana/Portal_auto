@@ -76,6 +76,9 @@ El endpoint productivo soporta consumo backend-to-backend por JSON:
 - **Referencia S3:** el consumidor envia la ruta S3 del documento ya cargado.
 - **Base64:** el consumidor envia el contenido del archivo codificado en Base64.
 
+En Base64, `fileName` y `contentType` son requeridos. En S3 son opcionales:
+la Lambda infiere ambos desde la ruta cuando no vienen declarados.
+
 JSON/Base64:
 
 
@@ -96,8 +99,6 @@ JSON/S3:
 {
   "action": "extract_vehicle_document",
   "document": {
-    "fileName": "carnet.pdf",
-    "contentType": "application/pdf",
     "source": "s3://WS/2026/7/documento.pdf"
   }
 }
