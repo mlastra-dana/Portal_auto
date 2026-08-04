@@ -845,7 +845,8 @@ No completes campos por conocimiento general, patrones, marcas conocidas, nombre
 Solo extrae valores que estén visibles en el documento adjunto o en el texto OCR de apoyo.
 Si un valor está parcialmente visible, borroso, ambiguo o no puedes distinguirlo con seguridad, usa null y agrega el campo a missing_fields.
 No corrijas ni normalices un valor si eso requiere adivinar caracteres; conserva únicamente lo legible.
-Evalúa primero la legibilidad general del documento. Si la imagen/PDF está borroso, recortado, oscuro, sobreexpuesto, con reflejos, con sombras fuertes, con resolución insuficiente, rotado de forma que impide leer, o no permite leer con seguridad los campos críticos, marca document_valid=false.
+Evalúa primero la legibilidad general del documento. Si la imagen/PDF está borroso, recortado, oscuro, sobreexpuesto, con reflejos, con sombras fuertes, con resolución insuficiente o no permite leer con seguridad los campos críticos, marca document_valid=false.
+Si el documento está rotado 90, 180 o 270 grados pero el texto es legible, rota mentalmente la lectura y extrae los datos. La rotación por sí sola no invalida el documento.
 No aceptes documentos de baja legibilidad aunque parezcan ser de tipo vehicular.
 Usa confidence de 0 a 100. Para documentos válidos y legibles, confidence debe ser al menos 75. Si la legibilidad es baja, usa confidence menor a 75.
 
@@ -909,6 +910,11 @@ Reglas de extracción:
 
 Guía específica para carnet de circulación:
 - Suele mostrar "CERTIFICADO DE CIRCULACIÓN" como título.
+- Si el carnet está rotado, lee el documento en la orientación en la que el título y las líneas sean horizontales.
+- En el formato del carnet, después del número largo superior suele aparecer el nombre del titular y luego la cédula/RIF. Ejemplo: "LUIGI COLASURDO DI LEMBO" es ownerName y "V15178462" es ownerId.
+- La marca suele aparecer cerca o después de la cédula/RIF. Ejemplo: "TOYOTA" es brand.
+- El modelo suele aparecer en la línea siguiente a la marca y puede contener versión/código técnico. Ejemplo: "COROLLA GLI 1.8/ ZZE142L-GEMNMF" es model completo, no ownerName.
+- Si una línea contiene términos de vehículo como COROLLA, GLI, PICANTO, SEDAN, AUTOMOVIL, chasis o códigos de versión, no la uses como ownerName.
 - Extrae "Placa" como plate.
 - Extrae "Serial N.I.V. (S. Carrocería)" como vin.
 - Extrae peso desde "KGS", ejes desde "EJES", color desde el texto de color y puestos desde "PTOS".
