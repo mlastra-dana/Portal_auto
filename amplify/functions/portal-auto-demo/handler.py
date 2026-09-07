@@ -44,6 +44,7 @@ CORS_HEADERS = {
 
 DOCUMENT_TYPE_LABELS = {
     "certificate_of_origin": "Certificado de origen",
+    "vehicle_registration_certificate": "Certificado de registro vehicular",
     "circulation_card": "Carnet de circulación",
     "unknown": "Documento no reconocido",
 }
@@ -53,6 +54,11 @@ QUOTE_DEFAULTS = {
 }
 
 SUPPORTED_ACTIONS = {"extract_vehicle_document", "request_vehicle_policy_quote"}
+ACCEPTED_DOCUMENT_TYPES = {
+    "certificate_of_origin",
+    "vehicle_registration_certificate",
+    "circulation_card",
+}
 
 
 def response(status_code: int, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -319,12 +325,18 @@ def decode_base64_value(value: str) -> bytes:
 
 def detect_document_type_from_text(text: str) -> str:
     upper = text.upper()
+    if "CERTIFICATE_OF_ORIGIN" in upper:
+        return "certificate_of_origin"
+    if "VEHICLE_REGISTRATION_CERTIFICATE" in upper:
+        return "vehicle_registration_certificate"
+    if "CIRCULATION_CARD" in upper:
+        return "circulation_card"
     if "CERTIFICADO DE ORIGEN" in upper:
         return "certificate_of_origin"
     if "CERTIFICADO DE REGISTRO DE VEHICULO" in upper or "CERTIFICADO DE REGISTRO DE VEHÍCULO" in upper:
-        return "certificate_of_origin"
+        return "vehicle_registration_certificate"
     if "TITULO" in upper or "TÍTULO" in upper:
-        return "certificate_of_origin"
+        return "vehicle_registration_certificate"
     if "CERTIFICADO DE CIRCULACION" in upper or "CERTIFICADO DE CIRCULACIÓN" in upper:
         return "circulation_card"
     return "unknown"
@@ -334,10 +346,12 @@ def detect_document_type_from_filename(document: Dict[str, Any]) -> str:
     filename = filename_of(document).lower()
     if "carnet" in filename or "circulacion" in filename or "circulation" in filename:
         return "circulation_card"
-    if "origen" in filename or "titulo" in filename or "title" in filename or "propiedad" in filename:
+    if "origen" in filename:
         return "certificate_of_origin"
+    if "titulo" in filename or "title" in filename or "propiedad" in filename:
+        return "vehicle_registration_certificate"
     if "registro" in filename and ("vehiculo" in filename or "vehicular" in filename):
-        return "certificate_of_origin"
+        return "vehicle_registration_certificate"
     return "unknown"
 
 
@@ -432,7 +446,7 @@ def invalid_document_body(extraction: Optional[Dict[str, Any]] = None) -> Dict[s
     document_type = (extraction or {}).get("document_type") or "unknown"
     return {
         "ok": False,
-        "message": "Documento inválido o ilegible. Por favor carga un certificado de origen o carnet de circulación válido y legible.",
+        "message": "Documento inválido o ilegible. Por favor carga un certificado de origen, certificado de registro vehicular, título o carnet de circulación válido y legible.",
         "document": {
             "valid": False,
             "type": document_type,
@@ -449,7 +463,7 @@ def is_invalid_or_illegible(extraction: Dict[str, Any]) -> bool:
     vehicle = extraction.get("vehicle") or {}
     confidence = extraction.get("confidence")
 
-    if document_type not in {"certificate_of_origin", "circulation_card"}:
+    if document_type not in ACCEPTED_DOCUMENT_TYPES:
         return True
     if not extraction.get("document_valid"):
         return True
@@ -471,7 +485,7 @@ def is_invalid_or_illegible(extraction: Dict[str, Any]) -> bool:
 def invalid_document_response(extraction: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return response(422, {
         "ok": False,
-        "message": "Documento inválido o ilegible. Por favor carga un certificado de origen o carnet de circulación válido y legible.",
+        "message": "Documento inválido o ilegible. Por favor carga un certificado de origen, certificado de registro vehicular, título o carnet de circulación válido y legible.",
         "extraction": extraction,
     })
 
@@ -504,7 +518,8 @@ def build_prompt(ocr_text: Optional[str]) -> str:
     return f"""
 Eres un extractor documental de vehículos en Venezuela.
 Analiza el documento adjunto. Puede ser:
-- Certificado de origen / certificado de registro / título de propiedad del vehículo.
+- Certificado de origen del vehículo.
+- Certificado de registro vehicular o título de propiedad del vehículo.
 - Carnet o certificado de circulación del INTT.
 
 Devuelve exclusivamente JSON válido. No uses markdown ni explicaciones.
@@ -517,7 +532,7 @@ No corrijas ni normalices un valor si eso requiere adivinar caracteres; conserva
 Esquema exacto:
 {{
   "document_valid": false,
-  "document_type": "certificate_of_origin | circulation_card | unknown",
+  "document_type": "certificate_of_origin | vehicle_registration_certificate | circulation_card | unknown",
   "confidence": 0,
   "vehicle": {{
     "ownerId": null,
@@ -540,11 +555,13 @@ Esquema exacto:
 }}
 
 Reglas de identificación:
-- Solo son documentos válidos: certificado/título de origen/registro vehicular y carnet/certificado de circulación.
-- document_type = "certificate_of_origin" si el documento principal tiene encabezados como "Certificado de Origen", "Certificado de Registro de Vehículo", "Título", "Título de Propiedad" o "Propiedad del Vehículo".
+- Solo son documentos válidos: certificado de origen, certificado de registro vehicular/título y carnet/certificado de circulación.
+- document_type = "certificate_of_origin" únicamente si el documento principal tiene encabezado o identificación clara como "Certificado de Origen".
+- document_type = "vehicle_registration_certificate" si el documento principal tiene encabezados como "Certificado de Registro de Vehículo", "Título", "Título de Propiedad" o "Propiedad del Vehículo".
 - document_type = "circulation_card" si el documento principal tiene encabezado "Certificado de Circulación", "Carnet de Circulación" o formato de carnet INTT.
-- Si un PDF contiene varias páginas o secciones, clasifica según el documento principal o encabezado dominante. No clasifiques como "circulation_card" solo porque aparezca una mención secundaria a circulación dentro de un certificado/título.
-- En certificado de origen/título puede no existir placa; eso no invalida el documento.
+- No clasifiques como "certificate_of_origin" un título o certificado de registro vehicular solo porque también sea un documento vehicular emitido por INTT.
+- Si un PDF contiene varias páginas o secciones, clasifica según el documento principal o encabezado dominante. No clasifiques como "circulation_card" solo porque aparezca una mención secundaria a circulación dentro de otro documento vehicular.
+- En certificado de origen, certificado de registro vehicular o título puede no existir placa; eso no invalida el documento.
 - En carnet de circulación, placa y vin/serial de carrocería son campos críticos.
 
 Reglas de extracción:
@@ -570,8 +587,13 @@ Guía específica para carnet de circulación:
 - Extrae "Serial N.I.V. (S. Carrocería)" como vin.
 - Extrae peso desde "KGS", ejes desde "EJES", color desde el texto de color y puestos desde "PTOS".
 
-Guía específica para certificado de origen/título:
-- Puede llamarse "Certificado de Registro de Vehículo", "Certificado de Origen", "Título" o similar.
+Guía específica para certificado de origen:
+- Debe identificarse claramente como "Certificado de Origen".
+- Puede incluir factura de venta, concesionario, fecha de emisión, número de control u otros datos administrativos; esos datos pueden ir en messages, pero no reemplazan los campos del vehículo.
+- La placa puede estar ausente; no la inventes.
+
+Guía específica para certificado de registro vehicular/título:
+- Puede llamarse "Certificado de Registro de Vehículo", "Título", "Título de Propiedad" o similar.
 - Puede incluir datos administrativos como fecha de emisión o número de autorización; esos datos pueden ir en messages, pero no reemplazan los campos del vehículo.
 - La placa puede estar ausente; no la inventes.
 
@@ -623,7 +645,11 @@ def read_bedrock_text(result: Dict[str, Any]) -> str:
 
 def normalize_bedrock_extraction(raw: Dict[str, Any], document: Dict[str, Any], ocr_text: Optional[str]) -> Dict[str, Any]:
     vehicle_raw = raw.get("vehicle") or {}
-    document_type = detect_document_type(document, f"{raw.get('document_type') or ''}\n{ocr_text or ''}")
+    messages = raw.get("messages") if isinstance(raw.get("messages"), list) else []
+    document_type = detect_document_type(
+        document,
+        f"{raw.get('document_type') or ''}\n{' '.join(str(message) for message in messages)}\n{ocr_text or ''}",
+    )
 
     vehicle = empty_vehicle(document_type)
     vehicle.update(
@@ -645,7 +671,6 @@ def normalize_bedrock_extraction(raw: Dict[str, Any], document: Dict[str, Any], 
         }
     )
 
-    messages = raw.get("messages") if isinstance(raw.get("messages"), list) else []
     return {
         "document_valid": bool(raw.get("document_valid", document_type != "unknown")),
         "document_type": document_type,
