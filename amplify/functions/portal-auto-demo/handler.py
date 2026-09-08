@@ -115,6 +115,14 @@ def normalize_year(value: Any) -> Optional[str]:
     return match.group(0) if match else None
 
 
+def first_present(source: Dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = source.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def filename_of(document: Dict[str, Any]) -> str:
     explicit_filename = document.get("fileName") or document.get("filename")
     if explicit_filename:
@@ -404,9 +412,15 @@ def missing_fields_for(vehicle: Dict[str, Any]) -> List[str]:
 
 
 def merge_missing_fields(raw_missing_fields: Any, vehicle: Dict[str, Any]) -> List[str]:
+    document_type = vehicle.get("documentType")
     fields: List[str] = []
     if isinstance(raw_missing_fields, list):
-        fields.extend(str(field) for field in raw_missing_fields if field)
+        for field in raw_missing_fields:
+            normalized_field = str(field) if field else ""
+            if normalized_field == "plate" and document_type != "circulation_card":
+                continue
+            if normalized_field:
+                fields.append(normalized_field)
     fields.extend(missing_fields_for(vehicle))
     return list(dict.fromkeys(fields))
 
@@ -567,7 +581,7 @@ Reglas de identificación:
 Reglas de extracción:
 - ownerId: cédula/RIF del titular si aparece. Ejemplo del carnet: V24657722.
 - ownerName: nombre completo del titular si aparece. Ejemplo: MARIA MILAGROS LASTRA PEREZ.
-- plate: valor junto a "Placa". Ejemplo: AA635EE.
+- plate: valor junto a etiquetas como "Placa", "Placa Vehículo", "Placa asignada", "Nro. Placa", "Nº Placa" o "Matrícula". Ejemplo: AA635EE.
 - vin: valor junto a "Serial N.I.V.", "S. Carrocería", "NIV", "VIN", "serial carrocería" o "chasis". Ejemplo carnet: 8XBBA42E6B7816125. No uses como vin el número largo superior del carnet si no está etiquetado como N.I.V./carrocería/chasis.
 - engineSerial: serial de motor si aparece claramente; si no aparece, usa null.
 - brand: marca del vehículo. Ejemplo: KIA.
@@ -579,7 +593,9 @@ Reglas de extracción:
 - weightKg: peso en kg si aparece, sin texto adicional. Ejemplo: 400.
 - axles: número de ejes si aparece. Ejemplo: 2.
 - seats: puestos si aparece. Ejemplo: 5.
-- missing_fields: lista de campos críticos o esperados que no pudieron extraerse con claridad. Usa los nombres del JSON, por ejemplo: ["engineSerial", "color"].
+- missing_fields: lista de campos críticos que no pudieron extraerse con claridad. Usa los nombres del JSON, por ejemplo: ["engineSerial", "color"].
+- Para certificado de origen, certificado de registro vehicular o título, plate es opcional: si está visible debes extraerla, pero si no está visible no la agregues a missing_fields.
+- Para carnet/certificado de circulación, plate sí es crítica: si no se lee claramente, agrega "plate" a missing_fields y marca document_valid=false.
 
 Guía específica para carnet de circulación:
 - Suele mostrar "CERTIFICADO DE CIRCULACIÓN" como título.
@@ -589,11 +605,16 @@ Guía específica para carnet de circulación:
 
 Guía específica para certificado de origen:
 - Debe identificarse claramente como "Certificado de Origen".
+- Revisa toda la página buscando placa, incluso si aparece en una tabla o con etiquetas como "Placa Vehículo", "Placa asignada", "Nro. Placa", "Nº Placa" o "Matrícula".
+- Si la placa aparece visible, extráela como vehicle.plate.
+- En algunos certificados de origen del INTT, la placa aparece en el bloque superior izquierdo, en la fila "Placa:", debajo de "Fecha Emisión:" y antes de "Año de Fabricación:"/"Marca:". Lee el valor alfanumérico impreso inmediatamente a la derecha de esa etiqueta aunque esté sobre el fondo/marca de agua.
+- No confundas "REFECIV", "RECFCIV", números de control, facturas, serial de chasis/carrocería o planillas con la placa.
 - Puede incluir factura de venta, concesionario, fecha de emisión, número de control u otros datos administrativos; esos datos pueden ir en messages, pero no reemplazan los campos del vehículo.
 - La placa puede estar ausente; no la inventes.
 
 Guía específica para certificado de registro vehicular/título:
 - Puede llamarse "Certificado de Registro de Vehículo", "Título", "Título de Propiedad" o similar.
+- Si la placa aparece visible, extráela como vehicle.plate.
 - Puede incluir datos administrativos como fecha de emisión o número de autorización; esos datos pueden ir en messages, pero no reemplazan los campos del vehículo.
 - La placa puede estar ausente; no la inventes.
 
@@ -654,20 +675,20 @@ def normalize_bedrock_extraction(raw: Dict[str, Any], document: Dict[str, Any], 
     vehicle = empty_vehicle(document_type)
     vehicle.update(
         {
-            "ownerId": normalize_id(vehicle_raw.get("ownerId")),
-            "ownerName": normalize_text(vehicle_raw.get("ownerName")),
-            "plate": normalize_plate(vehicle_raw.get("plate")),
-            "vin": normalize_vin(vehicle_raw.get("vin")),
-            "engineSerial": normalize_upper(vehicle_raw.get("engineSerial")),
-            "brand": normalize_upper(vehicle_raw.get("brand")),
-            "model": normalize_upper(vehicle_raw.get("model")),
-            "year": normalize_year(vehicle_raw.get("year")),
-            "color": normalize_upper(vehicle_raw.get("color")),
-            "vehicleClass": normalize_upper(vehicle_raw.get("vehicleClass")),
-            "useType": normalize_upper(vehicle_raw.get("useType")),
-            "weightKg": normalize_text(vehicle_raw.get("weightKg")),
-            "axles": normalize_text(vehicle_raw.get("axles")),
-            "seats": normalize_text(vehicle_raw.get("seats")),
+            "ownerId": normalize_id(first_present(vehicle_raw, "ownerId", "owner_id", "identity", "cedula", "rif")),
+            "ownerName": normalize_text(first_present(vehicle_raw, "ownerName", "owner_name", "titular", "propietario")),
+            "plate": normalize_plate(first_present(vehicle_raw, "plate", "placa", "licensePlate", "license_plate", "plateNumber", "plate_number", "numeroPlaca", "nroPlaca")),
+            "vin": normalize_vin(first_present(vehicle_raw, "vin", "niv", "serialNiv", "serial_niv", "serialChasis", "serial_chasis", "serialCarroceria", "serial_carroceria", "chassisSerial", "chassis_serial")),
+            "engineSerial": normalize_upper(first_present(vehicle_raw, "engineSerial", "engine_serial", "serialMotor", "serial_motor", "motorSerial", "motor_serial")),
+            "brand": normalize_upper(first_present(vehicle_raw, "brand", "marca")),
+            "model": normalize_upper(first_present(vehicle_raw, "model", "modelo")),
+            "year": normalize_year(first_present(vehicle_raw, "year", "anio", "ano", "año")),
+            "color": normalize_upper(first_present(vehicle_raw, "color")),
+            "vehicleClass": normalize_upper(first_present(vehicle_raw, "vehicleClass", "vehicle_class", "clase", "tipo")),
+            "useType": normalize_upper(first_present(vehicle_raw, "useType", "use_type", "uso")),
+            "weightKg": normalize_text(first_present(vehicle_raw, "weightKg", "weight_kg", "pesoKg", "peso_kg", "peso")),
+            "axles": normalize_text(first_present(vehicle_raw, "axles", "ejes")),
+            "seats": normalize_text(first_present(vehicle_raw, "seats", "puestos")),
         }
     )
 
