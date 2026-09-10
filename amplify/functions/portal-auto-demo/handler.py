@@ -667,10 +667,15 @@ def read_bedrock_text(result: Dict[str, Any]) -> str:
 def normalize_bedrock_extraction(raw: Dict[str, Any], document: Dict[str, Any], ocr_text: Optional[str]) -> Dict[str, Any]:
     vehicle_raw = raw.get("vehicle") or {}
     messages = raw.get("messages") if isinstance(raw.get("messages"), list) else []
-    document_type = detect_document_type(
-        document,
-        f"{raw.get('document_type') or ''}\n{' '.join(str(message) for message in messages)}\n{ocr_text or ''}",
-    )
+    raw_document_type = str(raw.get("document_type") or "unknown")
+    raw_document_valid = bool(raw.get("document_valid", raw_document_type != "unknown"))
+    if not raw_document_valid:
+        document_type = raw_document_type if raw_document_type in ACCEPTED_DOCUMENT_TYPES else "unknown"
+    else:
+        document_type = detect_document_type(
+            document,
+            f"{raw_document_type}\n{' '.join(str(message) for message in messages)}\n{ocr_text or ''}",
+        )
 
     vehicle = empty_vehicle(document_type)
     vehicle.update(
@@ -693,7 +698,7 @@ def normalize_bedrock_extraction(raw: Dict[str, Any], document: Dict[str, Any], 
     )
 
     return {
-        "document_valid": bool(raw.get("document_valid", document_type != "unknown")),
+        "document_valid": raw_document_valid,
         "document_type": document_type,
         "extraction_source": "bedrock",
         "confidence": float(raw.get("confidence") or 0.8),

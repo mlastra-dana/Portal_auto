@@ -109,6 +109,8 @@ TOKEN_AUDIT_FIELD_MAP = {
     "totalTokens": "TOKENS_TOTALES",
     "reasonCode": "RESULTADO_VALIDOC",
     "fileName": "NOMBRE_ARCHIVO_DOC",
+    "validationObservation": "OBSERVACION_VALIDACION",
+    "responseAuto": "RESPONSE_AUTO",
 }
 
 
@@ -199,14 +201,56 @@ def parse_bedrock_token_usage(result: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
+def compact_observation(text: str, max_length: int = 700) -> str:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if len(normalized) <= max_length:
+        return normalized
+    return normalized[: max_length - 3].rstrip() + "..."
+
+
+def build_validation_observation(result_code: str, response_body: Optional[Dict[str, Any]]) -> str:
+    if not response_body:
+        if result_code == "VALIDATION_SERVICE_ERROR":
+            return "Error procesando el documento."
+        return result_code
+
+    document = response_body.get("document") if isinstance(response_body.get("document"), dict) else {}
+    messages = document.get("messages") if isinstance(document.get("messages"), list) else []
+    missing_fields = document.get("missingFields") if isinstance(document.get("missingFields"), list) else []
+
+    if result_code == "VALID_DOCUMENT":
+        if messages:
+            return compact_observation(f"Documento válido. Observación: {messages[0]}")
+        return "Documento válido."
+
+    if result_code == "INVALID_DOCUMENT":
+        details: List[str] = []
+        if messages:
+            return compact_observation(str(messages[0]))
+        if missing_fields:
+            details.append(f"Campos faltantes: {', '.join(str(field) for field in missing_fields)}.")
+        message = response_body.get("message")
+        if message:
+            details.append(str(message))
+        if not details:
+            details.append("Documento inválido.")
+        return compact_observation(" ".join(details))
+
+    if result_code == "VALIDATION_SERVICE_ERROR":
+        return compact_observation(str(response_body.get("message") or "Error procesando el documento."))
+
+    return compact_observation(str(response_body.get("message") or result_code))
+
+
 def build_token_audit_fields(
     body: Dict[str, Any],
     document: Dict[str, Any],
     extraction: Optional[Dict[str, Any]],
     token_usage: Dict[str, int],
     result_code: str,
+    response_body: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
-    del body
+    del body, extraction
     values = {
         "lambdaName": LAMBDA_NAME,
         "modelId": BEDROCK_MODEL_ID,
@@ -215,6 +259,8 @@ def build_token_audit_fields(
         "totalTokens": str(token_usage.get("totalTokens", 0)),
         "reasonCode": result_code,
         "fileName": filename_of(document),
+        "validationObservation": build_validation_observation(result_code, response_body),
+        "responseAuto": json.dumps(response_body or {}, ensure_ascii=False, separators=(",", ":")),
     }
     return {
         field_code: values[key]
@@ -229,11 +275,12 @@ def record_bedrock_token_usage(
     extraction: Optional[Dict[str, Any]],
     token_usage: Dict[str, int],
     result_code: str,
+    response_body: Optional[Dict[str, Any]] = None,
 ) -> None:
     if not DANA_TOKEN_AUDIT_PROJECT_ID:
         return
 
-    fields = build_token_audit_fields(body, document, extraction, token_usage, result_code)
+    fields = build_token_audit_fields(body, document, extraction, token_usage, result_code, response_body)
     logger.info(
         "token_audit_start_conversation_request project_id=%s total_tokens=%s fields=%s",
         DANA_TOKEN_AUDIT_PROJECT_ID,
@@ -251,7 +298,10 @@ def record_bedrock_token_usage(
                 "X-DEBUG": DANA_CONVERSATION_DEBUG,
             },
         )
-        logger.info("token_audit_start_conversation_response keys=%s", list(result.keys()))
+        if result.get("wsError"):
+            logger.warning("token_audit_start_conversation_ws_error response=%s", json.dumps(result, ensure_ascii=False))
+        else:
+            logger.info("token_audit_start_conversation_response keys=%s", list(result.keys()))
     except Exception as exc:
         logger.warning("token_audit_start_conversation_failed error=%s", exc)
 
@@ -1017,10 +1067,15 @@ def read_bedrock_text(result: Dict[str, Any]) -> str:
 def normalize_bedrock_extraction(raw: Dict[str, Any], document: Dict[str, Any], ocr_text: Optional[str]) -> Dict[str, Any]:
     vehicle_raw = raw.get("vehicle") or {}
     messages = raw.get("messages") if isinstance(raw.get("messages"), list) else []
-    document_type = detect_document_type(
-        document,
-        f"{raw.get('document_type') or ''}\n{' '.join(str(message) for message in messages)}\n{ocr_text or ''}",
-    )
+    raw_document_type = str(raw.get("document_type") or "unknown")
+    raw_document_valid = bool(raw.get("document_valid", raw_document_type != "unknown"))
+    if not raw_document_valid:
+        document_type = raw_document_type if raw_document_type in ACCEPTED_DOCUMENT_TYPES else "unknown"
+    else:
+        document_type = detect_document_type(
+            document,
+            f"{raw_document_type}\n{' '.join(str(message) for message in messages)}\n{ocr_text or ''}",
+        )
 
     vehicle = empty_vehicle(document_type)
     vehicle.update(
@@ -1043,7 +1098,7 @@ def normalize_bedrock_extraction(raw: Dict[str, Any], document: Dict[str, Any], 
     )
 
     return {
-        "document_valid": bool(raw.get("document_valid", document_type != "unknown")),
+        "document_valid": raw_document_valid,
         "document_type": document_type,
         "extraction_source": "bedrock",
         "confidence": float(raw.get("confidence") or 0.8),
@@ -1129,10 +1184,11 @@ def handle_extract_vehicle_document(body: Dict[str, Any]) -> Dict[str, Any]:
     try:
         extraction, token_usage = extract_with_bedrock(file_bytes, document, ocr_text)
         if is_invalid_or_illegible(extraction):
-            record_bedrock_token_usage(body, document, extraction, token_usage, "INVALID_DOCUMENT")
-            return invalid_document_response(extraction)
-        record_bedrock_token_usage(body, document, extraction, token_usage, "VALID_DOCUMENT")
+            response_body = invalid_document_body(extraction)
+            record_bedrock_token_usage(body, document, extraction, token_usage, "INVALID_DOCUMENT", response_body)
+            return response(422, response_body)
         response_body = build_public_extraction_response(document, extraction)
+        record_bedrock_token_usage(body, document, extraction, token_usage, "VALID_DOCUMENT", response_body)
         return response(200, response_body)
     except Exception as exc:
         logger.exception("No se pudo extraer con Bedrock")
@@ -1141,21 +1197,20 @@ def handle_extract_vehicle_document(body: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(exc, BedrockExtractionError)
             else {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
         )
+        response_body = {
+            "ok": False,
+            "message": "No se pudo extraer información del documento.",
+            "error": str(exc),
+        }
         record_bedrock_token_usage(
             body,
             document,
             None,
             token_usage,
             "VALIDATION_SERVICE_ERROR",
+            response_body,
         )
-        return response(
-            500,
-            {
-                "ok": False,
-                "message": "No se pudo extraer información del documento.",
-                "error": str(exc),
-            },
-        )
+        return response(500, response_body)
 
 
 def lambda_handler(event, context):
