@@ -575,6 +575,10 @@ Reglas de identificación:
 - document_type = "circulation_card" si el documento principal tiene encabezado "Certificado de Circulación", "Carnet de Circulación" o formato de carnet INTT.
 - No clasifiques como "certificate_of_origin" un título o certificado de registro vehicular solo porque también sea un documento vehicular emitido por INTT.
 - Si un PDF contiene varias páginas o secciones, clasifica según el documento principal o encabezado dominante. No clasifiques como "circulation_card" solo porque aparezca una mención secundaria a circulación dentro de otro documento vehicular.
+- Revisa todas las páginas del PDF antes de responder. Una factura u otro soporte puede aparecer junto con el documento vehicular válido.
+- Si existe un certificado de origen, ese certificado determina el tipo y la validez del documento. La factura puede confirmar o completar datos del mismo vehículo cuando la placa, el VIN/serial de chasis u otros identificadores visibles permitan vincular ambas páginas con seguridad.
+- Si un dato aparece claramente solo en la factura y pertenece al mismo vehículo, puedes extraerlo. Si la factura y el certificado se contradicen, prioriza el certificado, no combines fragmentos de ambos valores y agrega una observación breve en messages.
+- Una factura sin certificado de origen, certificado de registro vehicular/título o carnet de circulación no es por sí sola un documento válido para este flujo.
 - En certificado de origen, certificado de registro vehicular o título puede no existir placa; eso no invalida el documento.
 - En carnet de circulación, placa y vin/serial de carrocería son campos críticos.
 
@@ -582,6 +586,8 @@ Reglas de extracción:
 - ownerId: cédula/RIF del titular si aparece. Ejemplo del carnet: V24657722.
 - ownerName: nombre completo del titular si aparece. Ejemplo: MARIA MILAGROS LASTRA PEREZ.
 - plate: valor junto a etiquetas como "Placa", "Placa Vehículo", "Placa asignada", "Nro. Placa", "Nº Placa" o "Matrícula". Ejemplo: AA635EE.
+- Para plate, localiza primero la etiqueta y transcribe únicamente el bloque alfanumérico impreso inmediatamente junto a ella, carácter por carácter y en el mismo orden. No agregues letras o números de etiquetas, fondos, marcas de agua ni campos cercanos.
+- Antes de devolver plate, vuelve a comprobar visualmente ese mismo bloque en el documento. Si ambas lecturas coinciden y el valor es claro, devuélvelo; usa null solo si después de esta segunda revisión persiste una ambigüedad visual real.
 - vin: valor junto a "Serial N.I.V.", "S. Carrocería", "NIV", "VIN", "serial carrocería" o "chasis". Ejemplo carnet: 8XBBA42E6B7816125. No uses como vin el número largo superior del carnet si no está etiquetado como N.I.V./carrocería/chasis.
 - engineSerial: serial de motor si aparece claramente; si no aparece, usa null.
 - brand: marca del vehículo. Ejemplo: KIA.
@@ -608,6 +614,7 @@ Guía específica para certificado de origen:
 - Revisa toda la página buscando placa, incluso si aparece en una tabla o con etiquetas como "Placa Vehículo", "Placa asignada", "Nro. Placa", "Nº Placa" o "Matrícula".
 - Si la placa aparece visible, extráela como vehicle.plate.
 - En algunos certificados de origen del INTT, la placa aparece en el bloque superior izquierdo, en la fila "Placa:", debajo de "Fecha Emisión:" y antes de "Año de Fabricación:"/"Marca:". Lee el valor alfanumérico impreso inmediatamente a la derecha de esa etiqueta aunque esté sobre el fondo/marca de agua.
+- En documentos de varias páginas, si la factura y el certificado muestran la misma placa, úsala como confirmación visual. Si la placa aparece claramente solo en la factura y el VIN/serial de chasis confirma que corresponde al mismo vehículo, puedes extraerla desde la factura. Si muestran valores diferentes, no combines caracteres entre páginas: prioriza el certificado y agrega una observación breve en messages; usa null solo si el valor del certificado no puede resolverse visualmente.
 - No confundas "REFECIV", "RECFCIV", números de control, facturas, serial de chasis/carrocería o planillas con la placa.
 - Puede incluir factura de venta, concesionario, fecha de emisión, número de control u otros datos administrativos; esos datos pueden ir en messages, pero no reemplazan los campos del vehículo.
 - La placa puede estar ausente; no la inventes.
