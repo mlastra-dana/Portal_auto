@@ -109,6 +109,7 @@ TOKEN_AUDIT_FIELD_MAP = {
     "totalTokens": "TOKENS_TOTALES",
     "reasonCode": "RESULTADO_VALIDOC",
     "fileName": "NOMBRE_ARCHIVO_DOC",
+    "s3Reference": "FILEREFERENCE",
     "validationObservation": "OBSERVACION_VALIDACION",
     "responseAuto": "RESPONSE_AUTO",
 }
@@ -259,6 +260,7 @@ def build_token_audit_fields(
         "totalTokens": str(token_usage.get("totalTokens", 0)),
         "reasonCode": result_code,
         "fileName": filename_of(document),
+        "s3Reference": s3_reference_for_audit(document),
         "validationObservation": build_validation_observation(result_code, response_body),
         "responseAuto": json.dumps(response_body or {}, ensure_ascii=False, separators=(",", ":")),
     }
@@ -389,6 +391,23 @@ def content_type_of(document: Dict[str, Any]) -> str:
 
 def document_source_of(document: Dict[str, Any]) -> str:
     return str(document.get("source") or "").strip()
+
+
+def s3_reference_for_audit(document: Dict[str, Any]) -> str:
+    source = document_source_of(document)
+    if is_s3_uri(source):
+        return source
+
+    s3_uri = document.get("s3_uri") or document.get("s3Uri")
+    if s3_uri and is_s3_uri(str(s3_uri).strip()):
+        return str(s3_uri).strip()
+
+    bucket = document.get("s3_bucket") or document.get("s3Bucket")
+    key = document.get("s3_key") or document.get("s3Key")
+    if bucket and key:
+        return f"s3://{str(bucket).strip()}/{str(key).lstrip('/')}"
+
+    return ""
 
 
 def is_s3_uri(value: str) -> bool:
